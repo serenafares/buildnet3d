@@ -69,11 +69,11 @@ class RenderParams:
     """Point of interest adjustment range during pose refinement"""
 
     ## Sunlight parameters
-    latitude: float
+    latitude: float = tyro.MISSING
     """Building location latitude (degrees)"""
-    longitude: float
+    longitude: float = tyro.MISSING
     """Building location longitude (degrees)"""
-    date_time: str
+    date_time: str = tyro.MISSING
     """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
     
     # Lighting parameters
