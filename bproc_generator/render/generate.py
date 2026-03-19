@@ -161,7 +161,7 @@ class BlenderProcRenderer(RenderParams):
                 strength=self.hdr_strength,
                 rotation_euler=self.hdr_rotation,
             )
-        # Sun light based on geographic location and time
+        ## Sun light based on geographic location and time
         if self.use_sun:
             # Get sun position from pvlib
             dt = pd.DatetimeIndex(
