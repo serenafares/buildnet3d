@@ -67,6 +67,14 @@ class RenderParams:
     """Elevation adjustment range during pose refinement"""
     delta_poi: tuple[float, float] = (0.0, 0.5)
     """Point of interest adjustment range during pose refinement"""
+
+    ## Sunlight parameters
+    latitude: float
+    """Building location latitude (degrees)"""
+    longitude: float
+    """Building location longitude (degrees)"""
+    date_time: str
+    """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
     
     # Lighting parameters
     use_hdr_background: bool = True
@@ -78,13 +86,7 @@ class RenderParams:
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
 
-    ## Sunlight parameters
-    latitude: float
-    """Building location latitude (degrees)"""
-    longitude: float
-    """Building location longitude (degrees)"""
-    date_time: str
-    """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
+    ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
     sun_energy: float = 5.0
