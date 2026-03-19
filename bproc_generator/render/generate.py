@@ -9,7 +9,13 @@ import numpy as np
 from PIL import Image
 import tyro
 
-sys.path.extend(["/home/chexu/buildnet3d"])
+import math
+from datetime import datetime
+import pvlib
+import pandas as pd
+
+#sys.path.extend(["/home/chexu/buildnet3d"])
+sys.path.extend([r"C:\Users\sefares\buildnet3d"])
 from buildnet3d.utils.utils import build_translation
 
 @dataclass
@@ -20,9 +26,11 @@ class RenderParams:
     """Path to the segmented building OBJ file"""
     output_path: Path = Path("outputs/generated")
     """Output directory for rendered assets"""
-    resolution: tuple[int, int] = (512, 512)
+    #resolution: tuple[int, int] = (512, 512)
+    resolution: tuple[int, int] = (256, 256)
     """Rendering resolution (width, height)"""
-    num_frames: int = 20
+    #num_frames: int = 20
+    num_frames: int = 5
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
@@ -68,7 +76,32 @@ class RenderParams:
     """Environment lighting intensity"""
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
-    
+
+    ## Sunlight parameters
+    latitude: float
+    """Building location latitude (degrees)"""
+    longitude: float
+    """Building location longitude (degrees)"""
+    date_time: str
+    """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
+    use_sun: bool = True
+    """Enable sun light source"""
+    sun_energy: float = 5.0
+    """Sun light intensity"""
+    north_offset_deg: float = 0.0
+    """Rotation offset to align building model with true North (degrees)"""
+
+## conversion function
+def solar_to_blender_rotation(azimuth_deg, zenith_deg, north_offset_deg=0):
+    """
+    Converts PSA solar angles to Blender sun rotation.
+    azimuth_deg: 0=North, 90=East, clockwise
+    zenith_deg: 0=overhead, 90=horizon
+    north_offset_deg: building's North alignment in the .obj file
+    """
+    elevation_rad = math.radians(90 - zenith_deg)
+    blender_azimuth_rad = math.radians(-(azimuth_deg + north_offset_deg))
+    return (elevation_rad, 0, blender_azimuth_rad)    
 
 @dataclass
 class BlenderProcRenderer(RenderParams):
@@ -86,7 +119,17 @@ class BlenderProcRenderer(RenderParams):
             "scene_box" : {},
             "frames": [],
         }
-        
+        ## adding location and time info for sun position calculation
+        self.metadata["location"] = {
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            }
+        self.metadata["capture_time"] = self.date_time
+
+        ## sun state
+        self.sun_azimuth = None
+        self.sun_zenith = None
+
         # Initialize rendering pipeline
         bproc.init()
         self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
@@ -118,6 +161,36 @@ class BlenderProcRenderer(RenderParams):
                 strength=self.hdr_strength,
                 rotation_euler=self.hdr_rotation,
             )
+        # Sun light based on geographic location and time
+        if self.use_sun:
+            # Get sun position from pvlib
+            dt = pd.DatetimeIndex(
+                [pd.Timestamp(self.date_time, tz="UTC")]
+            )
+            solar_pos = pvlib.solarposition.get_solarposition(
+                dt, self.latitude, self.longitude
+            )
+            azimuth = solar_pos["azimuth"].values[0]
+            zenith = solar_pos["apparent_zenith"].values[0]
+
+            self.sun_azimuth = azimuth
+            self.sun_zenith = zenith
+            
+            # Skip if sun is below horizon (night time)
+            if zenith >= 90:
+                print(f"Sun is below horizon (zenith={zenith:.1f}°), skipping sun light.")
+                return
+            
+            # Convert to Blender rotation
+            sun_rotation = solar_to_blender_rotation(
+                azimuth, zenith, self.north_offset_deg
+            )
+            
+            # Create sun light in Blender
+            sun = bproc.types.Light()
+            sun.set_type("SUN")
+            sun.set_energy(self.sun_energy)
+            sun.set_rotation_euler(sun_rotation)
 
     @staticmethod
     def _get_color_map() -> dict[str, list[float]]:
@@ -292,6 +365,15 @@ class BlenderProcRenderer(RenderParams):
             
     def save_metadata(self):
         """Saves camera metadata in JSON format"""
+        # Save sun info to metadata
+        self.metadata["sun"] = {
+            "azimuth": self.sun_azimuth,
+            "zenith": self.sun_zenith,
+            "energy": self.sun_energy,
+            "date_time": self.date_time,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+        }
         with open(self.output_path / "meta_data.json", "w") as f:
             json.dump(self.metadata, f, indent=4)
 
