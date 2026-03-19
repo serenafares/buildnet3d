@@ -15,7 +15,8 @@ import pvlib
 import pandas as pd
 
 #sys.path.extend(["/home/chexu/buildnet3d"])
-sys.path.extend([r"C:\Users\sefares\buildnet3d"])
+#sys.path.extend([r"C:\Users\sefares\buildnet3d"])
+sys.path.extend([str(Path(__file__).resolve().parents[2])])
 from buildnet3d.utils.utils import build_translation
 
 @dataclass
@@ -91,6 +92,49 @@ class RenderParams:
     north_offset_deg: float = 0.0
     """Rotation offset to align building model with true North (degrees)"""
 
+## varying sun intensity and color based on zenith angle
+def get_max_elevation(latitude: float, longitude: float, date_time: str) -> float:
+    date = pd.Timestamp(date_time, tz="UTC").date()
+    times = pd.date_range(
+        start=f"{date} 00:00",
+        end=f"{date} 23:59",
+        freq="10min",
+        tz="UTC"
+    )
+    solar_pos = pvlib.solarposition.get_solarposition(times, latitude, longitude)
+    max_zenith = solar_pos["apparent_zenith"].min()
+    return 90 - max_zenith
+
+def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 5.0) -> float:
+    """
+    Computes sun intensity based on zenith angle.
+    Lower sun (high zenith) = less intense, higher sun = more intense.
+    """
+    # Intensity follows a sine curve — peaks at noon, fades at horizon
+    elevation_deg = 90 - zenith_deg
+    intensity = max_energy * math.sin(math.radians(elevation_deg))
+    return max(0.1, intensity)  # minimum 0.1 to avoid total darkness
+
+
+def sun_color_from_zenith(zenith_deg: float, latitude: float, longitude: float, date_time: str) -> list:
+    """
+    Returns warm RGB color for low sun (sunrise/sunset) 
+    and white for high sun (midday).
+    zenith close to 90° = warm orange/red
+    zenith close to 0°  = white
+    """
+    elevation_deg = 90 - zenith_deg
+    max_elev = get_max_elevation(latitude, longitude, date_time)
+    
+    # Normalize relative to today's maximum — 0=horizon, 1=peak of day
+    t = min(1.0, elevation_deg / max_elev)
+    
+    r = 1.0
+    g = 0.4 + 0.6 * t
+    b = 0.2 + 0.8 * t
+    return [round(r, 2), round(g, 2), round(b, 2)]
+
+
 ## conversion function
 def solar_to_blender_rotation(azimuth_deg, zenith_deg, north_offset_deg=0):
     """
@@ -129,6 +173,8 @@ class BlenderProcRenderer(RenderParams):
         ## sun state
         self.sun_azimuth = None
         self.sun_zenith = None
+        self.sun_energy_actual = None
+        self.sun_color_actual = None
 
         # Initialize rendering pipeline
         bproc.init()
@@ -186,11 +232,21 @@ class BlenderProcRenderer(RenderParams):
                 azimuth, zenith, self.north_offset_deg
             )
             
-            # Create sun light in Blender
+            energy = sun_intensity_from_zenith(zenith, self.sun_energy)
+            color = sun_color_from_zenith(
+                zenith, self.latitude, self.longitude, self.date_time
+            )
+
+            self.sun_energy_actual = energy
+            self.sun_color_actual = color
+
             sun = bproc.types.Light()
             sun.set_type("SUN")
-            sun.set_energy(self.sun_energy)
-            sun.set_rotation_euler(sun_rotation)
+            sun.set_energy(energy)
+            sun.set_color(color)
+            sun.blender_obj.rotation_euler = sun_rotation
+
+            print(f"Sun placed at azimuth={azimuth:.1f}°, zenith={zenith:.1f}°, energy={energy:.2f}, color={color}")
 
     @staticmethod
     def _get_color_map() -> dict[str, list[float]]:
@@ -369,7 +425,8 @@ class BlenderProcRenderer(RenderParams):
         self.metadata["sun"] = {
             "azimuth": self.sun_azimuth,
             "zenith": self.sun_zenith,
-            "energy": self.sun_energy,
+            "energy": self.sun_energy_actual,
+            "color": self.sun_color_actual,
             "date_time": self.date_time,
             "latitude": self.latitude,
             "longitude": self.longitude,
