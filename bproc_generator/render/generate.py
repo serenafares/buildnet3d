@@ -10,7 +10,6 @@ from PIL import Image
 import tyro
 
 import math
-from datetime import datetime
 import pvlib
 import pandas as pd
 
@@ -81,7 +80,8 @@ class RenderParams:
     """Enable HDR environment lighting"""
     background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
-    hdr_strength: float = 1.0
+    #hdr_strength: float = 1.0
+    hdr_strength: float = 150.0
     """Environment lighting intensity"""
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
@@ -89,10 +89,11 @@ class RenderParams:
     ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
-    sun_energy: float = 5.0
+    sun_energy: float = 1000.0
     """Sun light intensity"""
     north_offset_deg: float = 0.0
-    """Rotation offset to align building model with true North (degrees)"""
+    """Rotation offset to align building model with true North (degrees).
+        Set to 0 if the building's Y axis points North in the .obj file."""
 
 ## varying sun intensity and color based on zenith angle
 def get_max_elevation(latitude: float, longitude: float, date_time: str) -> float:
@@ -107,7 +108,7 @@ def get_max_elevation(latitude: float, longitude: float, date_time: str) -> floa
     max_zenith = solar_pos["apparent_zenith"].min()
     return 90 - max_zenith
 
-def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 5.0) -> float:
+def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 1000.0) -> float:
     """
     Computes sun intensity based on zenith angle.
     Lower sun (high zenith) = less intense, higher sun = more intense.
@@ -115,25 +116,54 @@ def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 5.0) -> flo
     # Intensity follows a sine curve — peaks at noon, fades at horizon
     elevation_deg = 90 - zenith_deg
     intensity = max_energy * math.sin(math.radians(elevation_deg))
-    return max(0.1, intensity)  # minimum 0.1 to avoid total darkness
+    return intensity
 
-
-def sun_color_from_zenith(zenith_deg: float, latitude: float, longitude: float, date_time: str) -> list:
+def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 150.0) -> float:
     """
-    Returns warm RGB color for low sun (sunrise/sunset) 
-    and white for high sun (midday).
-    zenith close to 90° = warm orange/red
-    zenith close to 0°  = white
+    Computes DHI (diffuse sky light) intensity based on zenith angle.
+    Follows the same sine curve as DNI but at 15% of peak DNI.
+    Under clear sky: DHI ~ 15% of DNI at all times.
     """
     elevation_deg = 90 - zenith_deg
-    max_elev = get_max_elevation(latitude, longitude, date_time)
-    
-    # Normalize relative to today's maximum — 0=horizon, 1=peak of day
-    t = min(1.0, elevation_deg / max_elev)
-    
-    r = 1.0
-    g = 0.4 + 0.6 * t
-    b = 0.2 + 0.8 * t
+    intensity = max_hdr * math.sin(math.radians(elevation_deg))
+    return intensity
+
+
+def sun_color_from_zenith(zenith_deg: float) -> list:
+    """
+    Returns RGB color based on solar elevation following photography golden hour rules:
+    - 0°–3°:   deep orange/reddish
+    - 3°–8°:   warm orange
+    - 8°–15°:  yellow-warm
+    - 15°–30°: bright warm-neutral
+    - 30°–50°: bright neutral
+    - 50°+:    white / cool-neutral midday
+    """
+    elevation_deg = 90 - zenith_deg
+
+    if elevation_deg <= 3:
+        t = elevation_deg / 3.0
+        r, g, b = 1.0, 0.25 + 0.10 * t, 0.05 + 0.10 * t
+
+    elif elevation_deg <= 8:
+        t = (elevation_deg - 3) / 5.0
+        r, g, b = 1.0, 0.35 + 0.15 * t, 0.15 + 0.10 * t
+
+    elif elevation_deg <= 15:
+        t = (elevation_deg - 8) / 7.0
+        r, g, b = 1.0, 0.50 + 0.20 * t, 0.25 + 0.20 * t
+
+    elif elevation_deg <= 30:
+        t = (elevation_deg - 15) / 15.0
+        r, g, b = 1.0, 0.70 + 0.20 * t, 0.45 + 0.25 * t
+
+    elif elevation_deg <= 50:
+        t = (elevation_deg - 30) / 20.0
+        r, g, b = 1.0, 0.90 + 0.08 * t, 0.70 + 0.25 * t
+
+    else:
+        r, g, b = 1.0, 1.0, 1.0
+
     return [round(r, 2), round(g, 2), round(b, 2)]
 
 
@@ -177,6 +207,7 @@ class BlenderProcRenderer(RenderParams):
         self.sun_zenith = None
         self.sun_energy_actual = None
         self.sun_color_actual = None
+        self.hdr_energy_actual = None
 
         # Initialize rendering pipeline
         bproc.init()
@@ -203,41 +234,50 @@ class BlenderProcRenderer(RenderParams):
     
     def _setup_lighting(self):
         """Configures environment lighting"""
-        if self.use_hdr_background:
-            bproc.world.set_world_background_hdr_img(
-                str(self.background_path),
-                strength=self.hdr_strength,
-                rotation_euler=self.hdr_rotation,
-            )
-        ## Sun light based on geographic location and time
+        #if self.use_hdr_background:
+        #    bproc.world.set_world_background_hdr_img(
+        #        str(self.background_path),
+        #        strength=self.hdr_strength,
+        #        rotation_euler=self.hdr_rotation,
+        #    )
+
+        """Configures environment lighting with physically-based DNI and DHI"""
+
+        zenith = None
         if self.use_sun:
-            # Get sun position from pvlib
-            dt = pd.DatetimeIndex(
-                [pd.Timestamp(self.date_time, tz="UTC")]
-            )
+            dt = pd.DatetimeIndex([pd.Timestamp(self.date_time, tz="UTC")])
             solar_pos = pvlib.solarposition.get_solarposition(
                 dt, self.latitude, self.longitude
             )
             azimuth = solar_pos["azimuth"].values[0]
             zenith = solar_pos["apparent_zenith"].values[0]
-
             self.sun_azimuth = azimuth
             self.sun_zenith = zenith
-            
-            # Skip if sun is below horizon (night time)
+
+        # DHI component — HDR background
+        if self.use_hdr_background:
+            if self.use_sun and zenith is not None and zenith < 90:
+                effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
+            else:
+                effective_hdr_strength = self.hdr_strength * 0.05  # night ambient
+            bproc.world.set_world_background_hdr_img(
+                str(self.background_path),
+                strength=effective_hdr_strength,
+                rotation_euler=self.hdr_rotation,
+            )
+            self.hdr_energy_actual = effective_hdr_strength
+
+        # DNI component — direct sun light
+        if self.use_sun and zenith is not None:
             if zenith >= 90:
                 print(f"Sun is below horizon (zenith={zenith:.1f}°), skipping sun light.")
                 return
-            
-            # Convert to Blender rotation
+
             sun_rotation = solar_to_blender_rotation(
                 azimuth, zenith, self.north_offset_deg
             )
-            
             energy = sun_intensity_from_zenith(zenith, self.sun_energy)
-            color = sun_color_from_zenith(
-                zenith, self.latitude, self.longitude, self.date_time
-            )
+            color = sun_color_from_zenith(zenith)
 
             self.sun_energy_actual = energy
             self.sun_color_actual = color
@@ -248,7 +288,13 @@ class BlenderProcRenderer(RenderParams):
             sun.set_color(color)
             sun.blender_obj.rotation_euler = sun_rotation
 
-            print(f"Sun placed at azimuth={azimuth:.1f}°, zenith={zenith:.1f}°, energy={energy:.2f}, color={color}")
+            print(f"Sun placed:")
+            print(f"  Azimuth  : {azimuth:.1f}°")
+            print(f"  Zenith   : {zenith:.1f}°")
+            print(f"  DNI      : {energy:.1f} W/m²")
+            print(f"  DHI      : {self.hdr_energy_actual:.1f} W/m²")
+            print(f"  GHI      : {energy + self.hdr_energy_actual:.1f} W/m²")
+            print(f"  Color    : {color}")
 
     @staticmethod
     def _get_color_map() -> dict[str, list[float]]:
@@ -427,7 +473,9 @@ class BlenderProcRenderer(RenderParams):
         self.metadata["sun"] = {
             "azimuth": self.sun_azimuth,
             "zenith": self.sun_zenith,
-            "energy": self.sun_energy_actual,
+            "DNI": self.sun_energy_actual,
+            "DHI": self.hdr_energy_actual,  # new
+            "GHI": (self.sun_energy_actual or 0) + (self.hdr_energy_actual or 0),  # new
             "color": self.sun_color_actual,
             "date_time": self.date_time,
             "latitude": self.latitude,
