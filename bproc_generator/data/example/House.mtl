@@ -1,0 +1,13 @@
+# Blender 4.0.2 MTL File: 'WWR.blend'
+# www.blender.org
+
+newmtl HouseMat
+Ns 1000.000000
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd House_Diff_5k.png
+map_Ks House_Spec_5K.png
+map_Bump -bm 1.000000 House_Nrm_5K.png
