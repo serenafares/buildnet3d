@@ -291,8 +291,11 @@ class BlenderProcRenderer(RenderParams):
             print(f"  Azimuth  : {azimuth:.1f}°")
             print(f"  Zenith   : {zenith:.1f}°")
             print(f"  DNI      : {energy:.1f} W/m²")
-            print(f"  DHI      : {self.hdr_energy_actual:.1f} W/m²")
-            print(f"  GHI      : {energy + self.hdr_energy_actual:.1f} W/m²")
+            # print(f"  DHI      : {self.hdr_energy_actual:.1f} W/m²")
+            # print(f"  GHI      : {energy + self.hdr_energy_actual:.1f} W/m²")
+            dhi = self.hdr_energy_actual or 0.0
+            print(f"  DHI      : {dhi:.1f} W/m²")
+            print(f"  GHI      : {energy + dhi:.1f} W/m²")
             print(f"  Color    : {color}")
 
     @staticmethod
