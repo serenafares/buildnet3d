@@ -76,7 +76,8 @@ class RenderParams:
     """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
     
     # Lighting parameters
-    use_hdr_background: bool = True
+    ## = True when the path file is recieved, otherwise False
+    use_hdr_background: bool = False
     """Enable HDR environment lighting"""
     background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
@@ -240,8 +241,6 @@ class BlenderProcRenderer(RenderParams):
         #        strength=self.hdr_strength,
         #        rotation_euler=self.hdr_rotation,
         #    )
-
-        """Configures environment lighting with physically-based DNI and DHI"""
 
         zenith = None
         if self.use_sun:
