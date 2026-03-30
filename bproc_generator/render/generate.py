@@ -26,8 +26,7 @@ class RenderParams:
     """Path to the segmented building OBJ file"""
     output_path: Path = Path("outputs/generated")
     """Output directory for rendered assets"""
-    #resolution: tuple[int, int] = (512, 512)
-    resolution: tuple[int, int] = (256, 256)
+    resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
     #num_frames: int = 20
     num_frames: int = 5
