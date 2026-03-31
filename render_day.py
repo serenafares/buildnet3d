@@ -6,7 +6,7 @@ import pandas as pd
 LAT = 46.5197
 LON = 6.6323
 DATE = "2024-06-21"
-BASE = r"C:\Users\sefares\Desktop\renders_day2"
+BASE = r"C:\Users\sefares\Desktop\renders_day3"
 
 # Find sunrise and sunset automatically
 times = pd.date_range(
