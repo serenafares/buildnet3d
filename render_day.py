@@ -10,7 +10,7 @@ BASE = r"C:\Users\sefares\Desktop\renders_day2"
 
 # Find sunrise and sunset automatically
 times = pd.date_range(
-    start=f"{DATE} 04:00",
+    start=f"{DATE} 19:30",
     end=f"{DATE} 22:00",
     freq="1min",
     tz="UTC"
