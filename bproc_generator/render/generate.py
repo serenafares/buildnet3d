@@ -12,6 +12,8 @@ import tyro
 import math
 import pvlib
 import pandas as pd
+import pytz
+import bpy
 
 #sys.path.extend(["/home/chexu/buildnet3d"])
 #sys.path.extend([r"C:\Users\sefares\buildnet3d"])
@@ -75,10 +77,11 @@ class RenderParams:
     """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
     
     # Lighting parameters
-    ## = True when the path file is recieved, otherwise False
-    use_hdr_background: bool = False
-    """Enable HDR environment lighting"""
-    background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
+    use_hdr_background: bool = True
+    """Enable procedural Nishita sky as DHI component — no HDR file needed"""
+    # use_hdr_background: bool = False
+    # """Enable HDR environment lighting"""
+    # background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
     #hdr_strength: float = 1.0
     hdr_strength: float = 150.0
@@ -97,7 +100,11 @@ class RenderParams:
 
 ## varying sun intensity and color based on zenith angle
 def get_max_elevation(latitude: float, longitude: float, date_time: str) -> float:
-    date = pd.Timestamp(date_time, tz="UTC").date()
+    tz_str = pvlib.location.Location(latitude, longitude).tz
+    tz_local = pytz.timezone(tz_str)
+    dt_local = pd.Timestamp(date_time, tz=tz_local)
+    dt_utc = dt_local.tz_convert("UTC")
+    date = dt_utc.date()
     times = pd.date_range(
         start=f"{date} 00:00",
         end=f"{date} 23:59",
@@ -241,29 +248,77 @@ class BlenderProcRenderer(RenderParams):
         #        rotation_euler=self.hdr_rotation,
         #    )
 
+        # Compute sun position first
         zenith = None
+        azimuth = None
         if self.use_sun:
-            dt = pd.DatetimeIndex([pd.Timestamp(self.date_time, tz="UTC")])
+            tz_str = pvlib.location.Location(self.latitude, self.longitude).tz
+            tz_local = pytz.timezone(tz_str)
+            dt_local = pd.Timestamp(self.date_time, tz=tz_local)
+            dt_utc = dt_local.tz_convert("UTC")
+            dt = pd.DatetimeIndex([dt_utc])
+
             solar_pos = pvlib.solarposition.get_solarposition(
                 dt, self.latitude, self.longitude
             )
+
             azimuth = solar_pos["azimuth"].values[0]
             zenith = solar_pos["apparent_zenith"].values[0]
             self.sun_azimuth = azimuth
             self.sun_zenith = zenith
 
-        # DHI component — HDR background
-        if self.use_hdr_background:
-            if self.use_sun and zenith is not None and zenith < 90:
-                effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
-            else:
-                effective_hdr_strength = self.hdr_strength * 0.05  # night ambient
-            bproc.world.set_world_background_hdr_img(
-                str(self.background_path),
-                strength=effective_hdr_strength,
-                rotation_euler=self.hdr_rotation,
-            )
-            self.hdr_energy_actual = effective_hdr_strength
+        # # DHI component — HDR background
+        # if self.use_hdr_background:
+        #     if self.use_sun and zenith is not None and zenith < 90:
+        #         effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
+        #     else:
+        #         effective_hdr_strength = self.hdr_strength * 0.05  # night ambient
+        #     bproc.world.set_world_background_hdr_img(
+        #         str(self.background_path),
+        #         strength=effective_hdr_strength,
+        #         rotation_euler=self.hdr_rotation,
+        #     )
+        #     self.hdr_energy_actual = effective_hdr_strength
+
+        # DHI component — Nishita procedural sky
+        if self.use_hdr_background and zenith is not None and zenith < 90:
+            world = bpy.data.worlds["World"]
+            world.use_nodes = True
+            nodes = world.node_tree.nodes
+            links = world.node_tree.links
+            nodes.clear()
+
+            # Physically-based sky matching sun position
+            sky = nodes.new("ShaderNodeTexSky")
+            sky.sky_type = "NISHITA"
+            sky.sun_elevation = math.radians(90 - zenith)
+            sky.sun_rotation  = math.radians(azimuth)
+            sky.altitude      = 400.0   # Lausanne altitude in meters
+            sky.air_density   = 1.0
+            sky.dust_density  = 0.5
+
+            bg  = nodes.new("ShaderNodeBackground")
+            bg.inputs[1].default_value = self.hdr_strength / 150.0
+
+            out = nodes.new("ShaderNodeOutputWorld")
+            links.new(sky.outputs[0], bg.inputs[0])
+            links.new(bg.outputs[0], out.inputs[0])
+
+            self.hdr_energy_actual = hdr_intensity_from_zenith(zenith, self.hdr_strength)
+            print(f"  Sky      : Nishita procedural (elevation={90-zenith:.1f}°)")
+
+        elif self.use_hdr_background:
+            # Night time — set sky to black
+            world = bpy.data.worlds["World"]
+            world.use_nodes = True
+            nodes = world.node_tree.nodes
+            nodes.clear()
+            bg  = nodes.new("ShaderNodeBackground")
+            bg.inputs[0].default_value = (0, 0, 0, 1)
+            bg.inputs[1].default_value = 0.0
+            out = nodes.new("ShaderNodeOutputWorld")
+            world.node_tree.links.new(bg.outputs[0], out.inputs[0])
+            self.hdr_energy_actual = 0.0
 
         # DNI component — direct sun light
         if self.use_sun and zenith is not None:
@@ -286,13 +341,11 @@ class BlenderProcRenderer(RenderParams):
             sun.set_color(color)
             sun.blender_obj.rotation_euler = sun_rotation
 
+            dhi = self.hdr_energy_actual or 0.0
             print(f"Sun placed:")
             print(f"  Azimuth  : {azimuth:.1f}°")
             print(f"  Zenith   : {zenith:.1f}°")
             print(f"  DNI      : {energy:.1f} W/m²")
-            # print(f"  DHI      : {self.hdr_energy_actual:.1f} W/m²")
-            # print(f"  GHI      : {energy + self.hdr_energy_actual:.1f} W/m²")
-            dhi = self.hdr_energy_actual or 0.0
             print(f"  DHI      : {dhi:.1f} W/m²")
             print(f"  GHI      : {energy + dhi:.1f} W/m²")
             print(f"  Color    : {color}")

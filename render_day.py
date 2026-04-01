@@ -2,18 +2,21 @@ import subprocess
 import os
 import pvlib
 import pandas as pd
+import pytz
 
 LAT = 46.5197
 LON = 6.6323
 DATE = "2024-06-21"
 BASE = r"C:\Users\sefares\Desktop\renders_day3"
+tz_str = pvlib.location.Location(LAT, LON).tz
+tz_local = pytz.timezone(tz_str)
 
 # Find sunrise and sunset automatically
 times = pd.date_range(
-    start=f"{DATE} 19:30",
-    end=f"{DATE} 22:00",
+    start=f"{DATE} 00:00",
+    end=f"{DATE} 23:59",
     freq="1min",
-    tz="UTC"
+    tz=tz_local
 )
 solar_pos = pvlib.solarposition.get_solarposition(times, LAT, LON)
 above_horizon = solar_pos["apparent_zenith"] < 90
