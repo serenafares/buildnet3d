@@ -84,7 +84,7 @@ class RenderParams:
     # background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
     # hdr_strength: float = 1.0
-    hdr_strength: float = 100.0
+    hdr_strength: float = 50.0
     """Environment lighting intensity"""
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
@@ -127,7 +127,7 @@ def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 900.0) -> f
     intensity = max_energy * math.sin(math.radians(elevation_deg))
     return intensity
 
-def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 100.0) -> float:
+def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 50.0) -> float:
     """
     Computes DHI (diffuse sky light) intensity based on zenith angle.
     Follows the same sine curve as DNI but at 15% of peak DNI.
@@ -304,7 +304,7 @@ class BlenderProcRenderer(RenderParams):
             # bg.inputs[1].default_value = self.hdr_strength / 100.0
 
             effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
-            bg.inputs[1].default_value = effective_hdr_strength / 100.0
+            bg.inputs[1].default_value = effective_hdr_strength / 50.0
             self.hdr_energy_actual = effective_hdr_strength
 
             out = nodes.new("ShaderNodeOutputWorld")
