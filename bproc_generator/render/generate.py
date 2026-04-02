@@ -300,7 +300,8 @@ class BlenderProcRenderer(RenderParams):
             sky.dust_density  = 0.5
 
             bg  = nodes.new("ShaderNodeBackground")
-            bg.inputs[1].default_value = self.hdr_strength / 150.0
+            # bg.inputs[1].default_value = self.hdr_strength / 150.0
+            bg.inputs[1].default_value = self.hdr_strength
 
             out = nodes.new("ShaderNodeOutputWorld")
             links.new(sky.outputs[0], bg.inputs[0])
