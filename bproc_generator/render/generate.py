@@ -93,7 +93,7 @@ class RenderParams:
     use_sun: bool = True
     """Enable sun light source"""
     # sun_energy: float = 1000.0
-    sun_energy: float = 6.0
+    sun_energy: float = 10.0
     # around 6 times higher than HDR
     """Sun light intensity"""
     north_offset_deg: float = 0.0
