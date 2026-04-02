@@ -83,8 +83,8 @@ class RenderParams:
     # """Enable HDR environment lighting"""
     # background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
-    hdr_strength: float = 1.0
-    #hdr_strength: float = 150.0
+    # hdr_strength: float = 1.0
+    hdr_strength: float = 100.0
     """Environment lighting intensity"""
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
@@ -92,8 +92,8 @@ class RenderParams:
     ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
-    # sun_energy: float = 1000.0
-    sun_energy: float = 10.0
+    sun_energy: float = 1000.0
+    # sun_energy: float = 10.0
     # around 6 times higher than HDR
     """Sun light intensity"""
     north_offset_deg: float = 0.0
@@ -127,7 +127,7 @@ def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 1000.0) -> 
     intensity = max_energy * math.sin(math.radians(elevation_deg))
     return intensity
 
-def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 150.0) -> float:
+def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 100.0) -> float:
     """
     Computes DHI (diffuse sky light) intensity based on zenith angle.
     Follows the same sine curve as DNI but at 15% of peak DNI.
@@ -301,14 +301,18 @@ class BlenderProcRenderer(RenderParams):
 
             bg  = nodes.new("ShaderNodeBackground")
             # bg.inputs[1].default_value = self.hdr_strength / 150.0
-            bg.inputs[1].default_value = self.hdr_strength
+            # bg.inputs[1].default_value = self.hdr_strength / 100.0
+
+            effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
+            bg.inputs[1].default_value = effective_hdr_strength / 100.0
+            self.hdr_energy_actual = effective_hdr_strength
 
             out = nodes.new("ShaderNodeOutputWorld")
             links.new(sky.outputs[0], bg.inputs[0])
             links.new(bg.outputs[0], out.inputs[0])
 
-            self.hdr_energy_actual = hdr_intensity_from_zenith(zenith, self.hdr_strength)
-            print(f"  Sky      : Nishita procedural (elevation={90-zenith:.1f}°)")
+            # self.hdr_energy_actual = hdr_intensity_from_zenith(zenith, self.hdr_strength)
+            # print(f"  Sky      : Nishita procedural (elevation={90-zenith:.1f}°)")
 
         elif self.use_hdr_background:
             # Night time — set sky to black
