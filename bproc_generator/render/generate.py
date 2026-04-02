@@ -92,7 +92,7 @@ class RenderParams:
     ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
-    sun_energy: float = 800.0
+    sun_energy: float = 600.0
     # sun_energy: float = 10.0
     # around 6 times higher than HDR
     """Sun light intensity"""
@@ -117,7 +117,7 @@ def get_max_elevation(latitude: float, longitude: float, date_time: str) -> floa
     max_zenith = solar_pos["apparent_zenith"].min()
     return 90 - max_zenith
 
-def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 800.0) -> float:
+def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 600.0) -> float:
     """
     Computes sun intensity based on zenith angle.
     Lower sun (high zenith) = less intense, higher sun = more intense.
@@ -296,7 +296,7 @@ class BlenderProcRenderer(RenderParams):
             sky.sun_elevation = math.radians(90 - zenith)
             sky.sun_rotation  = math.radians(azimuth)
             sky.altitude      = 400.0   # Lausanne altitude in meters
-            sky.air_density   = 1.5
+            sky.air_density   = 2.0
             sky.dust_density  = 0.3
 
             bg  = nodes.new("ShaderNodeBackground")
