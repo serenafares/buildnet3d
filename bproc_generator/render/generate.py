@@ -83,8 +83,8 @@ class RenderParams:
     # """Enable HDR environment lighting"""
     # background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
-    #hdr_strength: float = 1.0
-    hdr_strength: float = 150.0
+    hdr_strength: float = 1.0
+    #hdr_strength: float = 150.0
     """Environment lighting intensity"""
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
@@ -92,7 +92,9 @@ class RenderParams:
     ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
-    sun_energy: float = 1000.0
+    # sun_energy: float = 1000.0
+    sun_energy: float = 6.0
+    # around 6 times higher than HDR
     """Sun light intensity"""
     north_offset_deg: float = 0.0
     """Rotation offset to align building model with true North (degrees).

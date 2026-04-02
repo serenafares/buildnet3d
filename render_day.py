@@ -24,37 +24,39 @@ above_horizon = solar_pos["apparent_zenith"] < 90
 sunrise = times[above_horizon][0]
 sunset  = times[above_horizon][-1]
 
-print(f"Sunrise: {sunrise.strftime('%H:%M')} UTC")
-print(f"Sunset:  {sunset.strftime('%H:%M')} UTC")
+print(f"Sunrise : {sunrise.strftime('%H:%M')} local ({tz_str})")
+print(f"Sunset  : {sunset.strftime('%H:%M')} local ({tz_str})")
 
 # Generate 30min intervals from sunrise to sunset
 render_times = pd.date_range(
     start=sunrise.floor("30min"),
     end=sunset.floor("30min"),
     freq="30min",
-    tz="UTC"
+    tz=tz_local
 )
 
 print(f"Rendering {len(render_times)} time slots...")
 
-for t in render_times:
+os.makedirs(BASE, exist_ok=True)
+
+for i, t in enumerate(render_times):
+    # Pass LOCAL time to generate.py — it handles UTC conversion internally
     datetime_str = t.strftime("%Y-%m-%d %H:%M:%S")
+    # Folder named in local time
     out_dir = os.path.join(BASE, t.strftime("%H-%M"))
 
-    print(f"\n{'='*50}")
-    print(f"Rendering {datetime_str}...")
+    print(f"[{i+1}/{len(render_times)}] Rendering {datetime_str} local...")
 
     cmd = [
         "blenderproc", "run",
         "bproc_generator/render/generate.py",
-        "--latitude", str(LAT),
+        "--latitude",  str(LAT),
         "--longitude", str(LON),
         "--date_time", datetime_str,
         "--output_path", out_dir,
         "--num_frames", "5",
         "--resolution", "512", "512"
     ]
-
     subprocess.run(cmd)
 
 print("\nAll done!")
