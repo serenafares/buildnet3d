@@ -84,7 +84,7 @@ class RenderParams:
     # background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
     """Path to HDR environment map"""
     # hdr_strength: float = 1.0
-    hdr_strength: float = 30.0
+    hdr_strength: float = 45.0
     """Environment lighting intensity"""
     hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
     """Environment rotation in radians (x,y,z)"""
@@ -92,7 +92,7 @@ class RenderParams:
     ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
-    sun_energy: float = 550.0
+    sun_energy: float = 500.0
     # sun_energy: float = 10.0
     # around 6 times higher than HDR
     """Sun light intensity"""
@@ -117,7 +117,7 @@ def get_max_elevation(latitude: float, longitude: float, date_time: str) -> floa
     max_zenith = solar_pos["apparent_zenith"].min()
     return 90 - max_zenith
 
-def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 550.0) -> float:
+def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 500.0) -> float:
     """
     Computes sun intensity based on zenith angle.
     Lower sun (high zenith) = less intense, higher sun = more intense.
@@ -127,7 +127,7 @@ def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 550.0) -> f
     intensity = max_energy * math.sin(math.radians(elevation_deg))
     return intensity
 
-def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 30.0) -> float:
+def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 45.0) -> float:
     """
     Computes DHI (diffuse sky light) intensity based on zenith angle.
     Follows the same sine curve as DNI but at 15% of peak DNI.
