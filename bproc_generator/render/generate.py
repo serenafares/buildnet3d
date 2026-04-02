@@ -92,7 +92,7 @@ class RenderParams:
     ## optional sun parameters
     use_sun: bool = True
     """Enable sun light source"""
-    sun_energy: float = 900.0
+    sun_energy: float = 800.0
     # sun_energy: float = 10.0
     # around 6 times higher than HDR
     """Sun light intensity"""
@@ -117,7 +117,7 @@ def get_max_elevation(latitude: float, longitude: float, date_time: str) -> floa
     max_zenith = solar_pos["apparent_zenith"].min()
     return 90 - max_zenith
 
-def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 900.0) -> float:
+def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 800.0) -> float:
     """
     Computes sun intensity based on zenith angle.
     Lower sun (high zenith) = less intense, higher sun = more intense.
