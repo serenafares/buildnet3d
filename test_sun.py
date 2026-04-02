@@ -135,3 +135,4 @@ for season_label, date in seasons.items():
             )
 
     print(f"{'='*85}")
+
