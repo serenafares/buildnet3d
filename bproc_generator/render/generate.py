@@ -296,7 +296,7 @@ class BlenderProcRenderer(RenderParams):
             sky.sun_elevation = math.radians(90 - zenith)
             sky.sun_rotation  = math.radians(azimuth)
             sky.altitude      = 400.0   # Lausanne altitude in meters
-            sky.air_density   = 2.0
+            sky.air_density   = 1.0
             sky.dust_density  = 0.3
 
             bg  = nodes.new("ShaderNodeBackground")
