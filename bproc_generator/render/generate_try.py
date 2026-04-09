@@ -756,8 +756,8 @@ from buildnet3d.utils.utils import build_translation
 # Your empirical calibration:  K_SUN=0.3, K_SKY=0.001
 #   -> K_SUN/K_SKY = 300 = NISHITA_FILL_FACTOR * (DNI/DHI) = 37 * ~8  CHECK
 # ---------------------------------------------------------------------------
-K_SUN: float = 0.03             # SUN lamp energy per W/m2 DNI  (your calibration)
-NISHITA_FILL_FACTOR: float = 37.0   # Nishita env-light over-fill vs SUN lamp
+K_SUN: float = 0.015             # SUN lamp energy per W/m2 DNI  (your calibration)
+NISHITA_FILL_FACTOR: float = 30.0   # Nishita env-light over-fill vs SUN lamp
 SHADOW_FILL_BOOST: float = 1.0      # Extra sky fill at low elevations (golden hour)
 
 # Civil twilight ends at zenith 96° — sky is still visibly illuminated
