@@ -798,16 +798,7 @@ def get_clear_sky_irradiance(
         airmass     : relative optical airmass
         in_civil_twilight : True if sun is below horizon but < 96° zenith
     """
-    location = pvlib.location.Location(
-        latitude=latitude,
-        longitude=longitude,
-        altitude=altitude,
-        tz=pvlib.location.Location(latitude, longitude).tz,
-    )
-
-    tz_local = pytz.timezone(location.tz)
-    dt_local = pd.Timestamp(date_time, tz=tz_local)
-    dt_utc = dt_local.tz_convert("UTC")
+    dt_utc = pd.Timestamp(date_time, tz="UTC")
     times = pd.DatetimeIndex([dt_utc])
 
     solar_pos = pvlib.solarposition.get_solarposition(times, latitude, longitude)
@@ -1090,7 +1081,11 @@ class BlenderProcRenderer(RenderParams):
         self.sun_color_actual: list | None = None
 
         bproc.init()
-        self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
+        # self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
+        self.scene_objects = bproc.loader.load_obj(
+            str(self.load_scene),
+            texture_dir=str(self.load_scene.parent)
+        )
         self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects)
 
         self._assign_categories()
