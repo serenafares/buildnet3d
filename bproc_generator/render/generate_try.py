@@ -37,7 +37,7 @@ from buildnet3d.utils.utils import build_translation
 #   DHI ≈ 100 W/m² at noon  →  Nishita strength  ≈ 0.3–0.6 (K_SKY ≈ 0.003–0.006)
 # ---------------------------------------------------------------------------
 K_SUN: float = 0.5   # Blender SUN lamp energy per W/m² of DNI
-K_SKY: float = 0.0001   # Nishita background strength per W/m² of DHI
+K_SKY: float = 0.005   # Nishita background strength per W/m² of DHI
 
 # Civil twilight ends at zenith 96° — sky is still visibly illuminated
 CIVIL_TWILIGHT_ZENITH: float = 96.0
