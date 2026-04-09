@@ -1083,8 +1083,7 @@ class BlenderProcRenderer(RenderParams):
         bproc.init()
         # self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
         self.scene_objects = bproc.loader.load_obj(
-            str(self.load_scene),
-            texture_dir=str(self.load_scene.parent)
+            str(self.load_scene.resolve())
         )
         self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects)
 
