@@ -982,7 +982,7 @@ class RenderParams:
     """Output directory for rendered assets"""
     resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
-    num_frames: int = 3
+    num_frames: int = 10 
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
