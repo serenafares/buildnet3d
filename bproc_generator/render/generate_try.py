@@ -757,7 +757,7 @@ from buildnet3d.utils.utils import build_translation
 #   -> K_SUN/K_SKY = 300 = NISHITA_FILL_FACTOR * (DNI/DHI) = 37 * ~8  CHECK
 # ---------------------------------------------------------------------------
 K_SUN: float = 0.0075             # SUN lamp energy per W/m2 DNI  (your calibration)
-NISHITA_FILL_FACTOR: float = 20.0   # Nishita env-light over-fill vs SUN lamp
+NISHITA_FILL_FACTOR: float = 15.0   # Nishita env-light over-fill vs SUN lamp
 SHADOW_FILL_BOOST: float = 1.0      # Extra sky fill at low elevations (golden hour)
 
 # Civil twilight ends at zenith 96° — sky is still visibly illuminated
@@ -948,9 +948,10 @@ def solar_to_blender_rotation(azimuth_deg: float, zenith_deg: float,
     """
     elevation_rad = math.radians(90 - zenith_deg)
     # Negate + apply north offset to go from meteorological to Blender azimuth
-    #blender_az_rad = math.radians(-(azimuth_deg + north_offset_deg))
-    blender_az_rad = math.radians(azimuth_deg - 180 + north_offset_deg)
-    # blender_az_rad = math.radians(180 - azimuth_deg - north_offset_deg)
+    # blender_az_rad = math.radians(-(azimuth_deg + north_offset_deg))
+    # blender_az_rad = math.radians(azimuth_deg - 180 + north_offset_deg)
+    blender_az_rad = math.radians(180 - azimuth_deg - north_offset_deg)
+    
     return (elevation_rad, 0.0, blender_az_rad)
 
 
@@ -967,7 +968,7 @@ def solar_azimuth_to_nishita(azimuth_deg: float, north_offset_deg: float = 0.0) 
     so we must NOT negate here, otherwise the sky gradient and the lamp point
     in opposite directions (180° flip = North/South inversion).
     """
-    return math.radians(azimuth_deg + north_offset_deg)
+    return math.radians(180 - azimuth_deg - north_offset_deg)
 
 
 # ---------------------------------------------------------------------------
