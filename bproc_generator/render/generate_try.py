@@ -937,7 +937,7 @@ def sun_color_from_elevation(elevation_deg: float) -> list:
 # ---------------------------------------------------------------------------
 
 def solar_to_blender_rotation(azimuth_deg: float, zenith_deg: float,
-                               north_offset_deg: float = 180.0) -> tuple:
+                               north_offset_deg: float = 0.0) -> tuple:
     """
     Converts pvlib solar angles → Blender Euler rotation for a SUN lamp.
 
@@ -948,12 +948,13 @@ def solar_to_blender_rotation(azimuth_deg: float, zenith_deg: float,
     """
     elevation_rad = math.radians(90 - zenith_deg)
     # Negate + apply north offset to go from meteorological to Blender azimuth
-    blender_az_rad = math.radians(-(azimuth_deg + north_offset_deg))
+    #blender_az_rad = math.radians(-(azimuth_deg + north_offset_deg))
+    blender_az_rad = math.radians(azimuth_deg - 180 + north_offset_deg)
     # blender_az_rad = math.radians(180 - azimuth_deg - north_offset_deg)
     return (elevation_rad, 0.0, blender_az_rad)
 
 
-def solar_azimuth_to_nishita(azimuth_deg: float, north_offset_deg: float = 180.0) -> float:
+def solar_azimuth_to_nishita(azimuth_deg: float, north_offset_deg: float = 0.0) -> float:
     """
     Converts pvlib azimuth (N=0, CW) → Blender Nishita sun_rotation (radians).
 
@@ -1047,7 +1048,7 @@ class RenderParams:
     # Sun lamp options
     use_sun: bool = True
     """Enable sun light source (DNI component)."""
-    north_offset_deg: float = 180.0
+    north_offset_deg: float = 0.0
     """Rotation offset to align building model with true North (degrees).
     Set to 0 if the building's Y axis points North in the .obj file."""
 
