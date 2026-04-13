@@ -948,8 +948,8 @@ def solar_to_blender_rotation(azimuth_deg: float, zenith_deg: float,
     """
     elevation_rad = math.radians(90 - zenith_deg)
     # Negate + apply north offset to go from meteorological to Blender azimuth
-    # blender_az_rad = math.radians(-(azimuth_deg + north_offset_deg))
-    blender_az_rad = math.radians(azimuth_deg - 180 + north_offset_deg)
+    blender_az_rad = math.radians(-(azimuth_deg + north_offset_deg))
+    # blender_az_rad = math.radians(azimuth_deg - 180 + north_offset_deg)
     # blender_az_rad = math.radians(180 - azimuth_deg - north_offset_deg)
 
 
