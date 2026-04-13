@@ -951,7 +951,8 @@ def solar_to_blender_rotation(azimuth_deg: float, zenith_deg: float,
     # Negate + apply north offset to go from meteorological to Blender azimuth
     blender_az_rad = math.radians(180 - azimuth_deg - north_offset_deg)
 
-    return (elevation_rad, 0.0, blender_az_rad)
+    # return (elevation_rad, 0.0, blender_az_rad)
+    return (0.0, elevation_rad, blender_az_rad)
 
 
 def solar_azimuth_to_nishita(azimuth_deg: float, north_offset_deg: float = 0.0) -> float:
@@ -1224,6 +1225,8 @@ class BlenderProcRenderer(RenderParams):
         sun.set_type("SUN")
         sun.set_energy(energy)
         sun.set_color(color)
+        # sun.blender_obj.rotation_euler = sun_rotation
+        sun.blender_obj.rotation_mode = 'XYZ'
         sun.blender_obj.rotation_euler = sun_rotation
 
         dhi = self.hdr_energy_actual or 0.0
