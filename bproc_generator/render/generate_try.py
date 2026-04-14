@@ -968,7 +968,7 @@ def solar_azimuth_to_nishita(azimuth_deg: float, north_offset_deg: float = 180.0
     so we must NOT negate here, otherwise the sky gradient and the lamp point
     in opposite directions (180° flip = North/South inversion).
     """
-    return math.radians(azimuth_deg + north_offset_deg)
+    return math.radians(azimuth_deg + north_offset_deg -180)
 
 
 # ---------------------------------------------------------------------------
