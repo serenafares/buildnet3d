@@ -20,7 +20,7 @@ from buildnet3d.utils.utils import build_translation
 
 # Physical calibration scalars
 K_SUN: float = 0.0075
-NISHITA_FILL_FACTOR: float = 15.0
+NISHITA_FILL_FACTOR: float = 20.0
 SHADOW_FILL_BOOST: float = 1.0
 CIVIL_TWILIGHT_ZENITH: float = 96.0
 DEFAULT_TURBIDITY: float = 3.0
