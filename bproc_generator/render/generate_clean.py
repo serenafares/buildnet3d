@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 import tyro
 
+import os
 import math
 import pvlib
 import pandas as pd
