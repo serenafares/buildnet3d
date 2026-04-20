@@ -17,6 +17,14 @@ import bpy
 sys.path.extend([str(Path(__file__).resolve().parents[2])])
 from buildnet3d.utils.utils import build_translation
 
+# Physical calibration scalars
+K_SUN: float = 0.0075
+NISHITA_FILL_FACTOR: float = 15.0
+SHADOW_FILL_BOOST: float = 1.0
+CIVIL_TWILIGHT_ZENITH: float = 96.0
+DEFAULT_TURBIDITY: float = 3.0
+NORTH_OFFSET_DEG: float = 180.0
+
 @dataclass
 class RenderParams:
     """Parameters for rendering synthetic building images."""
@@ -102,13 +110,6 @@ class RenderParams:
     documentation at the top of this file).  Adjust for other buildings.
     """
 
-# Physical calibration scalars
-K_SUN: float = 0.0075
-NISHITA_FILL_FACTOR: float = 15.0
-SHADOW_FILL_BOOST: float = 1.0
-CIVIL_TWILIGHT_ZENITH: float = 96.0
-DEFAULT_TURBIDITY: float = 3.0
-NORTH_OFFSET_DEG: float = 180.0
 
 def get_clear_sky_irradiance(
     latitude: float,
