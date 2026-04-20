@@ -328,8 +328,18 @@ class BlenderProcRenderer(RenderParams):
         
         # Initialize rendering pipeline
         bproc.init()
-        self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
-        self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects) 
+        #self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
+
+        # Temporarily change working directory to the OBJ folder so that
+        # Blender resolves MTL texture paths (House_Diff_5k.png, etc.)
+        # relative to the OBJ file rather than the process working directory.
+        obj_path = self.load_scene.resolve()
+        _cwd = os.getcwd()
+        os.chdir(obj_path.parent)
+        self.scene_objects = bproc.loader.load_obj(str(obj_path))
+        os.chdir(_cwd)
+
+        self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects)
 
         self._assign_categories()
         self._setup_camera()
