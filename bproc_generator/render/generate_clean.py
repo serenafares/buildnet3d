@@ -362,6 +362,11 @@ class BlenderProcRenderer(RenderParams):
     
     def _setup_lighting(self):
         """Configures environment lighting"""
+        # Remove any lights present in the scene before setting up ours
+        for obj in bpy.data.objects:
+            if obj.type == 'LIGHT':
+                bpy.data.objects.remove(obj, do_unlink=True)
+        
         irr = get_clear_sky_irradiance(
             self.latitude, self.longitude, self.altitude,
             self.date_time, self.turbidity,
