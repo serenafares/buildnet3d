@@ -630,6 +630,7 @@ class BlenderProcRenderer(RenderParams):
         for i in range(self.camera_idx):
             with h5py.File(self.output_path / f"{i}.hdf5", "r") as f:
                 # Process RGB
+                # for loop
                 rgb = np.array(f["colors"][:])
                 if self.enable_transparency:
                     alpha = np.full((*rgb.shape[:2], 1), int(self.alpha * 255), dtype=np.uint8)
@@ -699,6 +700,8 @@ class BlenderProcRenderer(RenderParams):
         poi = bproc.object.compute_poi(self.scene_objects)
         for _ in range(self.num_frames):
             self.generate_camera_pose(poi)
+
+# camera posed here, create for loop here for the times. 
 
         # Configure render outputs
         bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)

@@ -220,7 +220,10 @@ class BlenderProcRenderer(RenderParams):
 
         # Initialize rendering pipeline
         bproc.init()
-        self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
+        # self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
+        self.scene_objects = bproc.loader.load_obj(
+            str(self.load_scene.resolve())
+        )
         self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects) 
 
         self._assign_categories()

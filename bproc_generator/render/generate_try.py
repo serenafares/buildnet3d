@@ -721,6 +721,7 @@ import numpy as np
 from PIL import Image
 import tyro
 
+
 import math
 import pvlib
 import pandas as pd
@@ -968,7 +969,7 @@ def solar_azimuth_to_nishita(azimuth_deg: float, north_offset_deg: float = 180.0
     so we must NOT negate here, otherwise the sky gradient and the lamp point
     in opposite directions (180° flip = North/South inversion).
     """
-    return math.radians(azimuth_deg + north_offset_deg -180)
+    return math.radians(azimuth_deg + north_offset_deg - 180)
 
 
 # ---------------------------------------------------------------------------
@@ -1111,19 +1112,7 @@ class BlenderProcRenderer(RenderParams):
         bproc.camera.set_resolution(*self.resolution)
 
     def _setup_lighting(self):
-        """
-        Physically accurate lighting pipeline
-        ──────────────────────────────────────
-        1. pvlib Ineichen → DNI, DHI, GHI  [W/m²]
-        2. DHI * k_sun / nishita_fill_factor  -> Nishita background strength
-        3. DNI × k_sun   → Blender SUN lamp energy
-        4. GHI = DNI·cos(θ_z) + DHI  stored in metadata (correct formula)
-
-        Civil twilight (90° ≤ zenith ≤ 96°):
-            - No SUN lamp (disc below horizon)
-            - Nishita sky still active with DHI from model
-            - Result: blue-hour ambient glow, no hard shadows
-        """
+        """Physically accurate lighting pipeline"""
         irr = get_clear_sky_irradiance(
             self.latitude, self.longitude, self.altitude, self.date_time, self.turbidity
         )
@@ -1174,17 +1163,6 @@ class BlenderProcRenderer(RenderParams):
         links.new(sky.outputs[0], bg.inputs[0])
         links.new(bg.outputs[0], out.inputs[0])
 
-        # Sky strength derived from DNI/DHI ratio and Nishita fill factor.
-        #
-        # sky_strength = DHI * K_SUN / NISHITA_FILL_FACTOR
-        #
-        # This guarantees:
-        #  - The fill-to-key ratio tracks physical DNI/DHI throughout the day
-        #  - At noon (DNI=900, DHI=110): sky_strength = 110*0.3/37 = 0.89  -> sharp shadows
-        #  - At sunrise (DNI=200, DHI=60): sky_strength = 60*0.3/37 = 0.49 -> softer fill
-        #
-        # SHADOW_FILL_BOOST adds extra softness at low elevations (el < 15 deg)
-        # to reproduce the warm diffuse look of golden hour without affecting noon.
         boost = 1.0
         if elevation < 15.0:
             # Linearly ramp from shadow_fill_boost at horizon to 1.0 at 15 deg
