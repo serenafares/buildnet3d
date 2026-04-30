@@ -822,8 +822,12 @@ class BlenderProcRenderer(RenderParams):
             for i in range(self.camera_idx)
         ]
 
-        # Configure output format once (format settings don't accumulate)
+        # Register output passes once — BlenderProc does not allow calling
+        # enable_depth_output / enable_normals_output more than once per session.
         bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)
+        bproc.renderer.enable_depth_output(activate_antialiasing=False)
+        bproc.renderer.enable_normals_output()
+        bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
 
         # ── Phase 2: Timestep loop ────────────────────────────────────────
         timesteps = get_day_timesteps(self.date, self.latitude, self.longitude)
@@ -847,11 +851,12 @@ class BlenderProcRenderer(RenderParams):
             self._setup_lighting(date_time)
 
             # 2. Re-render the same camera poses under new lighting
-            #    Output slots are cleared and re-registered each iteration
-            #    to avoid the "duplicate keys" warning that washes out shadows.
-            bproc.renderer.enable_depth_output(activate_antialiasing=False)
-            bproc.renderer.enable_normals_output()
-            bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
+            #    reset_keyframes() clears per-frame data written by the previous
+            #    render call, preventing the "duplicate keys" accumulation that
+            #    washes out shadows — without re-registering the output passes.
+            bproc.utility.reset_keyframes()
+            for i, pose in enumerate(self.camera_list):
+                bproc.camera.add_camera_pose(pose, i)
             render_data = bproc.renderer.render()
             bproc.writer.write_hdf5(str(self.output_path), render_data)
 
