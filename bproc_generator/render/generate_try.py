@@ -20,7 +20,7 @@ from buildnet3d.utils.utils import build_translation
 
 # Physical calibration scalars
 K_SUN: float = 0.0075
-NISHITA_FILL_FACTOR: float = 15.0
+NISHITA_FILL_FACTOR: float = 10.0
 SHADOW_FILL_BOOST: float = 1.0
 CIVIL_TWILIGHT_ZENITH: float = 96.0
 DEFAULT_TURBIDITY: float = 3.0
@@ -36,7 +36,7 @@ class RenderParams:
     """Output directory for rendered assets"""
     resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
-    num_frames: int = 20
+    num_frames: int = 2
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
@@ -429,10 +429,22 @@ class BlenderProcRenderer(RenderParams):
     
     def _setup_lighting(self, date_time: str):
         """Configures environment lighting"""
+        # DEBUG
+        lights_before = [o.name for o in bpy.data.objects if o.type == "LIGHT"]
+        print(f"  [DEBUG] lights in scene before cleanup: {lights_before}")
+        
+        # existing cleanup code
+        for obj in bpy.data.objects:
+            if obj.type == "LIGHT":
+                bpy.data.objects.remove(obj, do_unlink=True)
+        
+        lights_after = [o.name for o in bpy.data.objects if o.type == "LIGHT"]
+        print(f"  [DEBUG] lights in scene after cleanup: {lights_after}")
+
         irr = get_clear_sky_irradiance(
         self.latitude, self.longitude, self.altitude,
         date_time, self.turbidity,
-    )
+        )
         self.irradiance = irr
  
         zenith    = irr["zenith"]
