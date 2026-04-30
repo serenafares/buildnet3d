@@ -20,7 +20,7 @@ from buildnet3d.utils.utils import build_translation
 
 # Physical calibration scalars
 K_SUN: float = 0.0075
-NISHITA_FILL_FACTOR: float = 10.0
+NISHITA_FILL_FACTOR: float = 11.0
 SHADOW_FILL_BOOST: float = 1.0
 CIVIL_TWILIGHT_ZENITH: float = 96.0
 DEFAULT_TURBIDITY: float = 3.0
@@ -429,18 +429,6 @@ class BlenderProcRenderer(RenderParams):
     
     def _setup_lighting(self, date_time: str):
         """Configures environment lighting"""
-        # DEBUG
-        lights_before = [o.name for o in bpy.data.objects if o.type == "LIGHT"]
-        print(f"  [DEBUG] lights in scene before cleanup: {lights_before}")
-        
-        # existing cleanup code
-        for obj in bpy.data.objects:
-            if obj.type == "LIGHT":
-                bpy.data.objects.remove(obj, do_unlink=True)
-        
-        lights_after = [o.name for o in bpy.data.objects if o.type == "LIGHT"]
-        print(f"  [DEBUG] lights in scene after cleanup: {lights_after}")
-
         irr = get_clear_sky_irradiance(
         self.latitude, self.longitude, self.altitude,
         date_time, self.turbidity,
@@ -503,7 +491,10 @@ class BlenderProcRenderer(RenderParams):
         else:
             boost = 1.0
  
-        sky_strength = (dhi * self.k_sun / self.nishita_fill_factor) * boost
+        sky_strength = max(
+            (dhi * self.k_sun / self.nishita_fill_factor) * boost,
+            0.02
+        )
         bg.inputs[1].default_value = sky_strength
         self.sky_energy_actual = dhi
  
