@@ -19,8 +19,8 @@ sys.path.extend([str(Path(__file__).resolve().parents[2])])
 from buildnet3d.utils.utils import build_translation
 
 # Physical calibration scalars
-K_SUN: float = 0.007
-NISHITA_FILL_FACTOR: float = 10.5
+K_SUN: float = 0.0075
+NISHITA_FILL_FACTOR: float = 10.0
 SHADOW_FILL_BOOST: float = 1.0
 CIVIL_TWILIGHT_ZENITH: float = 96.0
 DEFAULT_TURBIDITY: float = 3.0
@@ -427,11 +427,11 @@ class BlenderProcRenderer(RenderParams):
         self.camera_list: list[np.ndarray] = []
         bproc.camera.set_resolution(*self.resolution)
     
-    def _setup_lighting(self, date_time: str):
+    def _setup_lighting(self):
         """Configures environment lighting"""
         irr = get_clear_sky_irradiance(
-        self.latitude, self.longitude, self.altitude,
-        date_time, self.turbidity,
+            self.latitude, self.longitude, self.altitude,
+            self.date_time, self.turbidity,
         )
         self.irradiance = irr
  
@@ -440,7 +440,7 @@ class BlenderProcRenderer(RenderParams):
         elevation = irr["elevation"]
  
         print(f"\n{'─' * 55}")
-        print(f"  Date/time       : {date_time} UTC")
+        print(f"  Date/time       : {self.date_time} UTC")
         print(f"  Solar position  : elevation {elevation:.1f}°  "
               f"zenith {zenith:.1f}°  azimuth {azimuth:.1f}°")
         print(f"  DNI             : {irr['dni']:.1f} W/m²")
@@ -491,10 +491,7 @@ class BlenderProcRenderer(RenderParams):
         else:
             boost = 1.0
  
-        sky_strength = max(
-            (dhi * self.k_sun / self.nishita_fill_factor) * boost,
-            0.02
-        )
+        sky_strength = (dhi * self.k_sun / self.nishita_fill_factor) * boost
         bg.inputs[1].default_value = sky_strength
         self.sky_energy_actual = dhi
  
@@ -825,11 +822,8 @@ class BlenderProcRenderer(RenderParams):
             for i in range(self.camera_idx)
         ]
 
-        # Configure render pipeline outputs (once — persists across renders)
+        # Configure output format once (format settings don't accumulate)
         bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)
-        bproc.renderer.enable_depth_output(activate_antialiasing=False)
-        bproc.renderer.enable_normals_output()
-        bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
 
         # ── Phase 2: Timestep loop ────────────────────────────────────────
         timesteps = get_day_timesteps(self.date, self.latitude, self.longitude)
@@ -853,6 +847,11 @@ class BlenderProcRenderer(RenderParams):
             self._setup_lighting(date_time)
 
             # 2. Re-render the same camera poses under new lighting
+            #    Output slots are cleared and re-registered each iteration
+            #    to avoid the "duplicate keys" warning that washes out shadows.
+            bproc.renderer.enable_depth_output(activate_antialiasing=False)
+            bproc.renderer.enable_normals_output()
+            bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
             render_data = bproc.renderer.render()
             bproc.writer.write_hdf5(str(self.output_path), render_data)
 
