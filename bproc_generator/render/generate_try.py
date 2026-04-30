@@ -427,12 +427,12 @@ class BlenderProcRenderer(RenderParams):
         self.camera_list: list[np.ndarray] = []
         bproc.camera.set_resolution(*self.resolution)
     
-    def _setup_lighting(self):
+    def _setup_lighting(self, date_time: str):
         """Configures environment lighting"""
         irr = get_clear_sky_irradiance(
-            self.latitude, self.longitude, self.altitude,
-            self.date_time, self.turbidity,
-        )
+        self.latitude, self.longitude, self.altitude,
+        date_time, self.turbidity,
+    )
         self.irradiance = irr
  
         zenith    = irr["zenith"]
@@ -440,7 +440,7 @@ class BlenderProcRenderer(RenderParams):
         elevation = irr["elevation"]
  
         print(f"\n{'─' * 55}")
-        print(f"  Date/time       : {self.date_time} UTC")
+        print(f"  Date/time       : {date_time} UTC")
         print(f"  Solar position  : elevation {elevation:.1f}°  "
               f"zenith {zenith:.1f}°  azimuth {azimuth:.1f}°")
         print(f"  DNI             : {irr['dni']:.1f} W/m²")
