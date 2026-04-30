@@ -36,7 +36,7 @@ class RenderParams:
     """Output directory for rendered assets"""
     resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
-    num_frames: int = 2
+    num_frames: int = 20
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
@@ -102,7 +102,7 @@ class RenderParams:
     """Enable the Nishita procedural sky (models DHI — diffuse sky radiation)."""
     air_density:  float = 1.0
     """Nishita air density parameter."""
-    dust_density: float = 0.3
+    dust_density: float = 0.2
     """Nishita dust/aerosol density parameter."""
 
     # Sun lamp options
