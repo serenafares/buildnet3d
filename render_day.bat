@@ -10,6 +10,6 @@ blenderproc run bproc_generator/render/generate_try.py ^
   --latitude 46.5 ^
   --longitude 6.6 ^
   --date 2024-06-21 ^
-  --output-path outputs/generated
+  --output-path C:\Users\sefares\Desktop\renders
 
 echo Done.
