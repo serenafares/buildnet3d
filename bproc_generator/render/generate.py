@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 from PIL import Image
 import tyro
+import os
 
 import math
 import pvlib
