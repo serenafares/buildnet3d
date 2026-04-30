@@ -19,8 +19,8 @@ sys.path.extend([str(Path(__file__).resolve().parents[2])])
 from buildnet3d.utils.utils import build_translation
 
 # Physical calibration scalars
-K_SUN: float = 0.006
-NISHITA_FILL_FACTOR: float = 11.0
+K_SUN: float = 0.007
+NISHITA_FILL_FACTOR: float = 10.5
 SHADOW_FILL_BOOST: float = 1.0
 CIVIL_TWILIGHT_ZENITH: float = 96.0
 DEFAULT_TURBIDITY: float = 3.0
