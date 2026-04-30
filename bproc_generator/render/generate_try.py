@@ -36,7 +36,7 @@ class RenderParams:
     """Output directory for rendered assets"""
     resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
-    num_frames: int = 20
+    num_frames: int = 10
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
@@ -675,12 +675,6 @@ class BlenderProcRenderer(RenderParams):
         """Registers valid camera pose to pipeline"""
         bproc.camera.add_camera_pose(pose, self.camera_idx)
         self.camera_list.append(pose)
-        self.metadata["frames"].append({
-            "rgb_path": f"{self.camera_idx:04d}.png",
-            "segmentation_path": f"{self.camera_idx:04d}_mask.png",
-            "camera_to_world": pose.tolist(),
-            "intrinsics": bproc.camera.get_intrinsics_as_K_matrix().tolist(),
-        })
         self.camera_idx += 1
 
     def save_images(self, step_path: Path, hdf5_path: Path):
