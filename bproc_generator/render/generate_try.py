@@ -8,8 +8,8 @@ import h5py
 import numpy as np
 from PIL import Image
 import tyro
-import os
 
+import os
 import math
 import pvlib
 import pandas as pd
@@ -19,7 +19,7 @@ sys.path.extend([str(Path(__file__).resolve().parents[2])])
 from buildnet3d.utils.utils import build_translation
 
 # Physical calibration scalars
-K_SUN: float = 0.0075
+K_SUN: float = 0.075
 NISHITA_FILL_FACTOR: float = 10.0
 SHADOW_FILL_BOOST: float = 1.0
 CIVIL_TWILIGHT_ZENITH: float = 96.0
@@ -36,7 +36,7 @@ class RenderParams:
     """Output directory for rendered assets"""
     resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
-    num_frames: int = 2
+    num_frames: int = 10
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
@@ -429,16 +429,21 @@ class BlenderProcRenderer(RenderParams):
     
     def _setup_lighting(self, date_time: str):
         """Configures environment lighting"""
+        # Remove any lights present in the scene before setting up ours
+        for obj in bpy.data.objects:
+            if obj.type == 'LIGHT':
+                bpy.data.objects.remove(obj, do_unlink=True)
+
         irr = get_clear_sky_irradiance(
             self.latitude, self.longitude, self.altitude,
             date_time, self.turbidity,
         )
         self.irradiance = irr
- 
+
         zenith    = irr["zenith"]
         azimuth   = irr["azimuth"]
         elevation = irr["elevation"]
- 
+
         print(f"\n{'─' * 55}")
         print(f"  Date/time       : {date_time} UTC")
         print(f"  Solar position  : elevation {elevation:.1f}°  "
@@ -850,18 +855,14 @@ class BlenderProcRenderer(RenderParams):
             # 1. Update lighting for this timestep
             self._setup_lighting(date_time)
 
-            # 2. Re-render the same camera poses under new lighting
-            #    reset_keyframes() clears per-frame data written by the previous
-            #    render call, preventing the "duplicate keys" accumulation that
-            #    washes out shadows — without re-registering the output passes.
-            bproc.utility.reset_keyframes()
-            for i, pose in enumerate(self.camera_list):
-                bproc.camera.add_camera_pose(pose, i)
+            # 2. Re-render the same camera poses under new lighting.
+            #    Writing directly to step_path isolates each render completely —
+            #    no keyframe reset needed, no accumulation between timesteps.
             render_data = bproc.renderer.render()
-            bproc.writer.write_hdf5(str(self.output_path), render_data)
+            bproc.writer.write_hdf5(str(step_path), render_data)
 
             # 3. Save images and per-timestep metadata into subfolder
-            self.save_images(step_path, self.output_path)
+            self.save_images(step_path, step_path)
             self.save_metadata(step_path, date_time, frames_meta)
 
             # 4. Record solar values for the day summary
