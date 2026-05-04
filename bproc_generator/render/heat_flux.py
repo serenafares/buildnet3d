@@ -799,7 +799,7 @@ class HeatFluxRunner(HeatFluxParams):
             year  = int(self.date[:4])
             q_max = compute_solstice_q_max(
                 self.latitude, self.longitude, self.altitude,
-                year, self.turbidity, self.north_offset_deg,
+                year, self.turbidity,
             )
 
         print(f"\n{'═' * 55}")
