@@ -473,18 +473,21 @@ def compute_heat_flux(
 # ---------------------------------------------------------------------------
 
 def export_ply(faces: list[Face], scalars: np.ndarray,
-               output_path: Path) -> None:
+               output_path: Path,
+               q_max_override: float | None = None) -> None:
     """
     Exports the mesh as a PLY file with per-face colours mapped from
     heat flux magnitude (blue = 0 W/m², red = max W/m²).
 
     Parameters
     ----------
-    faces       : list of Face objects
-    scalars     : (N_faces,) heat flux magnitudes [W/m²]
-    output_path : path for the output .ply file
+    faces          : list of Face objects
+    scalars        : (N_faces,) heat flux magnitudes [W/m²]
+    output_path    : path for the output .ply file
+    q_max_override : fixed colormap ceiling [W/m²]. If None, uses scene max.
     """
-    q_max = scalars.max() if scalars.max() > 0 else 1.0
+    q_max = q_max_override if q_max_override is not None \
+            else (scalars.max() if scalars.max() > 0 else 1.0)
     n_faces = len(faces)
     n_verts = n_faces * 3   # un-indexed — one set of 3 verts per face
 
@@ -532,7 +535,8 @@ def render_flux_png(faces: list[Face], scalars: np.ndarray,
                     camera_to_world: np.ndarray,
                     intrinsics: np.ndarray,
                     resolution: tuple[int, int],
-                    output_path: Path) -> None:
+                    output_path: Path,
+                    q_max_override: float | None = None) -> None:
     """
     Projects the per-face heat flux onto a camera image plane and saves as PNG.
 
@@ -554,7 +558,8 @@ def render_flux_png(faces: list[Face], scalars: np.ndarray,
     W, H  = resolution
     img   = np.zeros((H, W, 3), dtype=np.uint8)
     zbuf  = np.full((H, W), np.inf, dtype=np.float64)
-    q_max = scalars.max() if scalars.max() > 0 else 1.0
+    q_max = q_max_override if q_max_override is not None \
+            else (scalars.max() if scalars.max() > 0 else 1.0)
 
     # World-to-camera: invert the camera_to_world pose
     c2w = np.array(camera_to_world, dtype=np.float64)
@@ -666,6 +671,78 @@ def save_colorbar(q_max: float, output_path: Path,
     print(f"  Colorbar saved → {output_path}  (0 – {q_max:.1f} W/m²)")
 
 
+def compute_solstice_q_max(latitude: float, longitude: float,
+                            altitude: float, year: int,
+                            turbidity: float = DEFAULT_TURBIDITY) -> float:
+    """
+    Computes the maximum possible solar heat flux on the summer solstice
+    (June 21) for the given location and year.
+
+    Uses a fast analytical estimate: at each 10-min solar position sample,
+    the theoretical maximum per-face flux is α_max × DNI + α_max × DHI
+    (face perfectly perpendicular to the sun, α_max = 0.9 for roof tiles).
+    This avoids running the full BVH for the calibration pass.
+
+    Returns the peak value with a 5% margin — used as the fixed colormap
+    ceiling so colours are physically comparable across all times of day
+    and all dates within the same year and location.
+    """
+    solstice_date = f"{year}-06-21"
+    print(f"  Computing solstice q_max for {solstice_date} "
+          f"at {latitude}°N {longitude}°E {altitude}m...")
+
+    times = pd.date_range(f"{solstice_date} 00:00",
+                          f"{solstice_date} 23:59",
+                          freq="10min", tz="UTC")
+    solar = pvlib.solarposition.get_solarposition(times, latitude, longitude)
+
+    q_max = 0.0
+    for ts, row in solar.iterrows():
+        if float(row["apparent_zenith"]) >= 90.0:
+            continue
+        sol = get_solar_irradiance(
+            latitude, longitude, altitude,
+            ts.strftime("%Y-%m-%d %H:%M:%S"), turbidity
+        )
+        # Best-case face: perfectly perpendicular to sun (cos θ = 1)
+        # using α_roof = 0.9 (highest absorptivity in DEFAULT_ABSORPTIVITY)
+        q_face = 0.9 * sol["dni"] + 0.9 * sol["dhi"]
+        if q_face > q_max:
+            q_max = q_face
+
+    q_max_margin = q_max * 1.05
+    print(f"  Solstice q_max  : {q_max:.1f} W/m²  "
+          f"→ +5% margin = {q_max_margin:.1f} W/m²")
+    return q_max_margin
+
+
+def get_day_timesteps(date: str, latitude: float, longitude: float) -> list[str]:
+    """
+    Returns renderable UTC timesteps at :00 and :30 bounded by civil twilight.
+    Identical to the helper in generate_try.py.
+    """
+    times = pd.date_range(f"{date} 00:00", f"{date} 23:59",
+                          freq="10min", tz="UTC")
+    solar = pvlib.solarposition.get_solarposition(times, latitude, longitude)
+    lit   = solar[solar["apparent_zenith"] <= CIVIL_TWILIGHT_ZENITH]
+    if lit.empty:
+        return []
+
+    def _round_up(dt):
+        if dt.minute < 30:
+            return dt.replace(minute=30, second=0, microsecond=0)
+        return (dt + pd.Timedelta(hours=1)).replace(minute=0, second=0,
+                                                     microsecond=0)
+    def _round_down(dt):
+        if dt.minute >= 30:
+            return dt.replace(minute=30, second=0, microsecond=0)
+        return dt.replace(minute=0, second=0, microsecond=0)
+
+    steps = pd.date_range(_round_up(lit.index[0]), _round_down(lit.index[-1]),
+                          freq="30min")
+    return [s.strftime("%Y-%m-%d %H:%M:%S") for s in steps]
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -682,132 +759,179 @@ class HeatFluxParams:
     """Building longitude [decimal degrees]."""
     altitude:    float = 400.0
     """Building altitude above sea level [m]."""
-    date_time:   str = tyro.MISSING
-    """UTC datetime string 'YYYY-MM-DD HH:MM:SS'."""
+    date:        str = tyro.MISSING
+    """
+    UTC date for the full-day loop: 'YYYY-MM-DD'.
+    Runs every 30-min step between civil twilight bounds automatically.
+    The year is extracted from this date to compute the solstice q_max.
+    """
     turbidity:   float = DEFAULT_TURBIDITY
     """Linke turbidity factor."""
     north_offset_deg: float = NORTH_OFFSET_DEG
     """Azimuth correction for building orientation [°]."""
-    output_path: Path = Path("outputs/heatflux")
-    """Output directory."""
-    camera_poses: Path = None
-    """Optional path to meta_data.json from generate_try.py for PNG renders."""
+    output_path: Path = Path("outputs/generated")
+    """
+    Root output folder — same root as generate_try.py.
+    Heat flux PNGs go into output_path/10h00/heatflux/ etc.,
+    alongside the existing images/, depths/, normals/ subfolders.
+    """
     resolution:  tuple[int, int] = (512, 512)
     """Image resolution for PNG renders."""
+    q_max:       float = 0.0
+    """
+    Fixed colormap ceiling [W/m²].
+    If 0 (default), automatically computed as the summer solstice maximum
+    for the given location and year — physically correct and location-aware.
+    Override with a positive value to use a custom fixed scale.
+    """
 
 
 @dataclass
 class HeatFluxRunner(HeatFluxParams):
 
     def run(self):
+        # ── Step 1: Resolve colormap ceiling ─────────────────────────────
+        # If q_max == 0 (default), compute it dynamically from the summer
+        # solstice of the input year and location — fully automatic and
+        # physically correct for any location worldwide.
+        q_max = self.q_max
+        if q_max <= 0:
+            year  = int(self.date[:4])
+            q_max = compute_solstice_q_max(
+                self.latitude, self.longitude, self.altitude,
+                year, self.turbidity, self.north_offset_deg,
+            )
+
         print(f"\n{'═' * 55}")
-        print(f"  Solar Heat Flux — {self.date_time} UTC")
-        print(f"  Location: {self.latitude}°N  {self.longitude}°E  "
+        print(f"  Solar Heat Flux — daily loop")
+        print(f"  Date     : {self.date}")
+        print(f"  Location : {self.latitude}°N  {self.longitude}°E  "
               f"{self.altitude}m")
+        print(f"  Colormap : 0 – {q_max:.1f} W/m²  "
+              f"({'auto solstice' if self.q_max <= 0 else 'user override'})")
         print(f"{'═' * 55}\n")
 
-        # 1. Parse OBJ
-        print(f"  Parsing OBJ: {self.obj_path}")
+        # ── Step 2: Parse OBJ and build BVH once ─────────────────────────
+        print(f"  Parsing OBJ : {self.obj_path}")
         faces = parse_obj(self.obj_path)
-        print(f"  Faces parsed: {len(faces)}")
-
-        # 2. Solar position + irradiance
-        sol = get_solar_irradiance(
-            self.latitude, self.longitude, self.altitude,
-            self.date_time, self.turbidity,
-        )
-        print(f"  Solar elevation : {sol['elevation']:.1f}°")
-        print(f"  DNI             : {sol['dni']:.1f} W/m²")
-        print(f"  DHI             : {sol['dhi']:.1f} W/m²")
-
-        if not sol["sun_above_horizon"] and not sol["in_civil_twilight"]:
-            print("  ⚠  Sun below horizon — zero heat flux.")
-            return
-
-        # 3. Sun direction vector
-        sun_vec = sun_direction_vector(
-            sol["azimuth"], sol["elevation"], self.north_offset_deg
-        )
-        print(f"  Sun vector      : ({sun_vec[0]:.3f}, "
-              f"{sun_vec[1]:.3f}, {sun_vec[2]:.3f})")
-
-        # 4. Build BVH
-        print("  Building BVH tree...")
+        print(f"  Faces       : {len(faces)}")
+        print(f"  Building BVH tree...")
         bvh = BVHNode(faces)
 
-        # 5. Compute heat flux
-        print("  Computing heat flux per face...")
-        scalars, vectors = compute_heat_flux(
-            faces, sun_vec, sol["dni"], sol["dhi"], bvh
-        )
-        print(f"  Flux range      : {scalars.min():.1f} – "
-              f"{scalars.max():.1f} W/m²")
-        print(f"  Mean flux       : {scalars.mean():.1f} W/m²")
-        print(f"  Total power     : "
-              f"{sum(scalars[i] * faces[i].area for i in range(len(faces))):.1f} W")
+        # ── Step 2: Get timesteps ─────────────────────────────────────────
+        timesteps = get_day_timesteps(self.date, self.latitude, self.longitude)
+        if not timesteps:
+            print("  ⚠  No renderable timesteps.")
+            return
+        print(f"  Timesteps   : {len(timesteps)}  "
+              f"({timesteps[0][11:16]} → {timesteps[-1][11:16]} UTC)\n")
 
-        # 6. Save results
+        # ── Step 3: Shared colorbar ───────────────────────────────────────
         self.output_path.mkdir(parents=True, exist_ok=True)
+        save_colorbar(q_max,
+                      self.output_path / "heatflux_colorbar.png")
 
-        # PLY coloured mesh
-        ply_path = self.output_path / "heat_flux.ply"
-        export_ply(faces, scalars, ply_path)
+        day_summary = []
 
-        # Colorbar
-        save_colorbar(scalars.max(),
-                      self.output_path / "colorbar.png")
+        # ── Step 4: Loop over timesteps ───────────────────────────────────
+        for date_time in timesteps:
+            hhmm = date_time[11:16].replace(":", "h")
+            print(f"\n  ── Timestep {hhmm} {'─' * 38}")
 
-        # Save scalar and vector arrays
-        np.save(self.output_path / "heat_flux_scalars.npy", scalars)
-        np.save(self.output_path / "heat_flux_vectors.npy", vectors)
-        print(f"  Arrays saved    → {self.output_path}/heat_flux_scalars.npy")
-        print(f"                    {self.output_path}/heat_flux_vectors.npy")
+            sol = get_solar_irradiance(
+                self.latitude, self.longitude, self.altitude,
+                date_time, self.turbidity,
+            )
+            print(f"  el={sol['elevation']:+.1f}°  "
+                  f"DNI={sol['dni']:.0f}  DHI={sol['dhi']:.0f} W/m²")
 
-        # Metadata
-        meta = {
-            "date_time":      self.date_time,
-            "latitude":       self.latitude,
-            "longitude":      self.longitude,
-            "altitude":       self.altitude,
-            "turbidity":      self.turbidity,
-            "north_offset":   self.north_offset_deg,
-            "solar_elevation":sol["elevation"],
-            "solar_azimuth":  sol["azimuth"],
-            "DNI_Wm2":        sol["dni"],
-            "DHI_Wm2":        sol["dhi"],
-            "n_faces":        len(faces),
-            "flux_min_Wm2":   float(scalars.min()),
-            "flux_max_Wm2":   float(scalars.max()),
-            "flux_mean_Wm2":  float(scalars.mean()),
-            "total_power_W":  float(sum(
-                scalars[i] * faces[i].area for i in range(len(faces))
-            )),
-        }
-        with open(self.output_path / "meta_data.json", "w") as f:
-            json.dump(meta, f, indent=4)
-
-        # 7. Optional PNG renders from camera poses
-        if self.camera_poses is not None:
-            print(f"\n  Rendering flux PNGs from {self.camera_poses}")
-            with open(self.camera_poses) as f:
-                meta_data = json.load(f)
-
-            png_dir = self.output_path / "heatflux_renders"
-            png_dir.mkdir(exist_ok=True)
-
-            K = np.array(meta_data["frames"][0]["intrinsics"])
-            for frame in meta_data["frames"]:
-                c2w   = np.array(frame["camera_to_world"])
-                idx   = frame["rgb_path"].replace(".png", "")
-                out_p = png_dir / f"{idx}_flux.png"
-                render_flux_png(
-                    faces, scalars, c2w, K,
-                    self.resolution, out_p
+            if sol["sun_above_horizon"] or sol["in_civil_twilight"]:
+                sun_vec = sun_direction_vector(
+                    sol["azimuth"], sol["elevation"], self.north_offset_deg
                 )
-                print(f"    Saved {out_p.name}")
+                scalars, vectors = compute_heat_flux(
+                    faces, sun_vec, sol["dni"], sol["dhi"], bvh
+                )
+            else:
+                scalars = np.zeros(len(faces))
+                vectors = np.zeros((len(faces), 3))
+
+            print(f"  flux: {scalars.min():.0f}–{scalars.max():.0f} W/m²  "
+                  f"(scale 0–{q_max:.0f})")
+
+            # Output goes into output_path/10h00/heatflux/
+            # sitting next to images/, depths/, normals/ etc.
+            step_path    = self.output_path / hhmm
+            heatflux_dir = step_path / "heatflux"
+            heatflux_dir.mkdir(parents=True, exist_ok=True)
+
+            # Arrays
+            np.save(heatflux_dir / "scalars.npy", scalars)
+            np.save(heatflux_dir / "vectors.npy", vectors)
+
+            # Coloured PLY mesh with fixed scale
+            export_ply(faces, scalars,
+                       heatflux_dir / "heat_flux.ply",
+                       q_max_override=q_max)
+
+            # Per-timestep metadata
+            total_power = float(sum(
+                scalars[i] * faces[i].area for i in range(len(faces))
+            ))
+            with open(heatflux_dir / "meta_data.json", "w") as f:
+                json.dump({
+                    "date_time":        date_time,
+                    "solar_elevation":  sol["elevation"],
+                    "solar_azimuth":    sol["azimuth"],
+                    "DNI_Wm2":          sol["dni"],
+                    "DHI_Wm2":          sol["dhi"],
+                    "flux_min_Wm2":     float(scalars.min()),
+                    "flux_max_Wm2":     float(scalars.max()),
+                    "flux_mean_Wm2":    float(scalars.mean()),
+                    "total_power_W":    total_power,
+                    "colormap_ceiling": q_max,
+                }, f, indent=4)
+
+            # PNG renders — read camera poses from sibling meta_data.json
+            meta_json = step_path / "meta_data.json"
+            if meta_json.exists():
+                with open(meta_json) as f:
+                    render_meta = json.load(f)
+                K = np.array(render_meta["frames"][0]["intrinsics"])
+                for frame in render_meta["frames"]:
+                    c2w   = np.array(frame["camera_to_world"])
+                    idx   = frame["rgb_path"].replace(".png", "")
+                    out_p = heatflux_dir / f"{idx}_flux.png"
+                    render_flux_png(faces, scalars, c2w, K,
+                                    self.resolution, out_p,
+                                    q_max_override=q_max)
+            else:
+                print(f"  ⚠  {meta_json} not found — no PNG renders")
+
+            day_summary.append({
+                "time_utc":      date_time,
+                "hhmm":          hhmm,
+                "elevation":     sol["elevation"],
+                "DNI_Wm2":       sol["dni"],
+                "DHI_Wm2":       sol["dhi"],
+                "flux_max_Wm2":  float(scalars.max()),
+                "flux_mean_Wm2": float(scalars.mean()),
+                "total_power_W": total_power,
+            })
+
+        # ── Step 5: Day summary ───────────────────────────────────────────
+        with open(self.output_path / "heatflux_day_summary.json", "w") as f:
+            json.dump({
+                "date":             self.date,
+                "latitude":         self.latitude,
+                "longitude":        self.longitude,
+                "colormap_ceiling": q_max,
+                "timesteps":        day_summary,
+            }, f, indent=4)
 
         print(f"\n{'═' * 55}")
-        print(f"  Done. Results in {self.output_path}")
+        print(f"  Done. {len(timesteps)} timesteps processed.")
+        print(f"  Summary → {self.output_path / 'heatflux_day_summary.json'}")
         print(f"{'═' * 55}\n")
 
 
