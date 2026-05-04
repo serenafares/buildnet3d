@@ -570,15 +570,16 @@ def render_flux_png(faces: list[Face], scalars: np.ndarray,
     def world_to_pixel(pt: np.ndarray):
         """
         Projects a world-space point to pixel (u, v) and returns depth.
+        BlenderProc cameras look along -Z, Y points up in camera space.
         Returns None if point is behind the camera.
         """
-        pc = R @ pt + t          # point in camera space
-        z  = pc[2]
-        if z <= 0.01:
+        pc    = R @ pt + t
+        depth = -pc[2]        # BlenderProc: forward = -Z, so depth = -z
+        if depth <= 0.01:
             return None
-        u = int(round(fx * pc[0] / z + cx))
-        v = int(round(fy * pc[1] / z + cy))
-        return u, v, z
+        u = int(round(fx *   pc[0]  / depth + cx))
+        v = int(round(fy * (-pc[1]) / depth + cy))  # Y flipped: image Y down
+        return u, v, depth
 
     def draw_triangle(p0, p1, p2, color, depth):
         """Rasterizes a filled triangle with z-buffer test."""
@@ -609,9 +610,10 @@ def render_flux_png(faces: list[Face], scalars: np.ndarray,
                         img[y, x, :] = color
 
     # Sort faces back-to-front (painter's algorithm)
+    # BlenderProc: depth = -z in camera space, sort descending depth
     def face_depth(i):
         pts = [R @ v + t for v in faces[i].vertices]
-        return -np.mean([p[2] for p in pts])
+        return np.mean([p[2] for p in pts])   # more positive z = further away
 
     order = sorted(range(len(faces)), key=face_depth)
 
