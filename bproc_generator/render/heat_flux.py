@@ -536,91 +536,115 @@ def render_flux_png(faces: list[Face], scalars: np.ndarray,
     """
     Projects the per-face heat flux onto a camera image plane and saves as PNG.
 
-    Each face is rasterized as a filled triangle using the camera intrinsics.
-    Faces are depth-sorted (painter's algorithm) for correct occlusion.
+    BlenderProc camera convention (OpenCV):
+      - camera_to_world[:3, 3] = camera position in world space
+      - camera looks along +Z in camera space
+      - Y axis points downward in image space
+    World-to-camera = inv(camera_to_world)
 
     Parameters
     ----------
     faces          : list of Face objects
     scalars        : (N_faces,) heat flux magnitudes [W/m²]
-    camera_to_world: (4, 4) camera pose matrix (world → camera is its inverse)
-    intrinsics     : (3, 3) camera intrinsic matrix K
+    camera_to_world: (4,4) BlenderProc camera pose matrix
+    intrinsics     : (3,3) camera intrinsic matrix K
     resolution     : (width, height) in pixels
     output_path    : path for the output PNG
     """
-    W, H = resolution
-    img  = np.zeros((H, W, 3), dtype=np.uint8)
-    zbuf = np.full((H, W), np.inf, dtype=np.float32)
+    W, H  = resolution
+    img   = np.zeros((H, W, 3), dtype=np.uint8)
+    zbuf  = np.full((H, W), np.inf, dtype=np.float64)
+    q_max = scalars.max() if scalars.max() > 0 else 1.0
 
-    # World-to-camera transform
-    w2c = np.linalg.inv(camera_to_world)
+    # World-to-camera: invert the camera_to_world pose
+    c2w = np.array(camera_to_world, dtype=np.float64)
+    w2c = np.linalg.inv(c2w)
     R   = w2c[:3, :3]
     t   = w2c[:3,  3]
 
-    q_max = scalars.max() if scalars.max() > 0 else 1.0
-    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
-    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+    fx = intrinsics[0][0]
+    fy = intrinsics[1][1]
+    cx = intrinsics[0][2]
+    cy = intrinsics[1][2]
 
-    def project(pt_world):
-        """Projects a 3D world point to (u, v, depth)."""
-        pc  = R @ pt_world + t
-        if pc[2] <= 0:
+    def world_to_pixel(pt: np.ndarray):
+        """
+        Projects a world-space point to pixel (u, v) and returns depth.
+        Returns None if point is behind the camera.
+        """
+        pc = R @ pt + t          # point in camera space
+        z  = pc[2]
+        if z <= 0.01:
             return None
-        u = int(fx * pc[0] / pc[2] + cx)
-        v = int(fy * pc[1] / pc[2] + cy)
-        return u, v, float(pc[2])
+        u = int(round(fx * pc[0] / z + cx))
+        v = int(round(fy * pc[1] / z + cy))
+        return u, v, z
 
     def draw_triangle(p0, p1, p2, color, depth):
-        """Rasterizes a triangle with depth testing (painter's algorithm)."""
+        """Rasterizes a filled triangle with z-buffer test."""
         xs = [p0[0], p1[0], p2[0]]
         ys = [p0[1], p1[1], p2[1]]
-        x0, x1 = max(0, min(xs)), min(W - 1, max(xs))
-        y0, y1 = max(0, min(ys)), min(H - 1, max(ys))
+        xmin = max(0,     min(xs))
+        xmax = min(W - 1, max(xs))
+        ymin = max(0,     min(ys))
+        ymax = min(H - 1, max(ys))
 
-        for y in range(y0, y1 + 1):
-            for x in range(x0, x1 + 1):
-                # Barycentric test
-                def sign(ax, ay, bx, by, px, py):
-                    return (ax - px) * (by - ay) - (ay - py) * (bx - ax)
-                d0 = sign(p0[0], p0[1], p1[0], p1[1], x, y)
-                d1 = sign(p1[0], p1[1], p2[0], p2[1], x, y)
-                d2 = sign(p2[0], p2[1], p0[0], p0[1], x, y)
-                has_neg = (d0 < 0) or (d1 < 0) or (d2 < 0)
-                has_pos = (d0 > 0) or (d1 > 0) or (d2 > 0)
-                if has_neg and has_pos:
-                    continue
-                if depth < zbuf[y, x]:
-                    zbuf[y, x]     = depth
-                    img[y, x, :]   = color
+        if xmin > xmax or ymin > ymax:
+            return
 
-    # Sort faces back-to-front for painter's algorithm
-    order = sorted(range(len(faces)),
-                   key=lambda i: -np.mean([
-                       (R @ v + t)[2] for v in faces[i].vertices
-                   ]))
+        ax, ay = p1[0] - p0[0], p1[1] - p0[1]
+        bx, by = p2[0] - p0[0], p2[1] - p0[1]
+        denom  = ax * by - ay * bx
+        if abs(denom) < 1e-8:
+            return
 
+        for y in range(ymin, ymax + 1):
+            for x in range(xmin, xmax + 1):
+                px, py = x - p0[0], y - p0[1]
+                u = (px * by - py * bx) / denom
+                v = (ax * py - ay * px) / denom
+                if u >= 0 and v >= 0 and (u + v) <= 1:
+                    if depth < zbuf[y, x]:
+                        zbuf[y, x]   = depth
+                        img[y, x, :] = color
+
+    # Sort faces back-to-front (painter's algorithm)
+    def face_depth(i):
+        pts = [R @ v + t for v in faces[i].vertices]
+        return -np.mean([p[2] for p in pts])
+
+    order = sorted(range(len(faces)), key=face_depth)
+
+    n_drawn = 0
     for i in order:
-        face = faces[i]
-        q    = scalars[i]
-        idx  = int(min(255, (q / q_max) * 255))
-        color = COLORMAP[idx]
+        face  = faces[i]
+        q     = scalars[i]
+        cidx  = int(min(255, (q / q_max) * 255))
+        color = COLORMAP[cidx]
 
-        projs = [project(v) for v in face.vertices]
+        projs = [world_to_pixel(v) for v in face.vertices]
         if any(p is None for p in projs):
             continue
-        depth = np.mean([p[2] for p in projs])
 
-        p0, p1, p2 = [(p[0], p[1]) for p in projs]
+        depth = float(np.mean([p[2] for p in projs]))
+        p0 = (projs[0][0], projs[0][1])
+        p1 = (projs[1][0], projs[1][1])
+        p2 = (projs[2][0], projs[2][1])
 
-        # Skip faces behind camera or fully out of frame
-        if all(p[0] < 0 or p[0] >= W or p[1] < 0 or p[1] >= H
-               for p in [p0, p1, p2]):
+        # Skip if all vertices outside frame
+        in_frame = any(
+            0 <= p[0] < W and 0 <= p[1] < H
+            for p in [p0, p1, p2]
+        )
+        if not in_frame:
             continue
 
         draw_triangle(p0, p1, p2, color, depth)
+        n_drawn += 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(output_path)
+    print(f"    Drew {n_drawn}/{len(faces)} faces → {output_path.name}")
 
 
 # ---------------------------------------------------------------------------
