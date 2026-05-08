@@ -63,9 +63,7 @@ from PIL import Image
 import tyro
 
 
-# ---------------------------------------------------------------------------
 # Physical constants
-# ---------------------------------------------------------------------------
 
 CIVIL_TWILIGHT_ZENITH: float = 96.0
 DEFAULT_TURBIDITY:     float = 3.0
@@ -239,9 +237,7 @@ def parse_obj(obj_path: Path,
     return faces
 
 
-# ---------------------------------------------------------------------------
 # Solar position & irradiance
-# ---------------------------------------------------------------------------
 
 def get_solar_irradiance(latitude: float, longitude: float, altitude: float,
                          date_time: str,
@@ -320,9 +316,7 @@ def sun_direction_vector(azimuth_pvlib_deg: float,
     return np.array([sx, sy, sz], dtype=np.float64)
 
 
-# ---------------------------------------------------------------------------
 # Shadow testing via BVH
-# ---------------------------------------------------------------------------
 
 class BVHNode:
     """Minimal axis-aligned bounding box BVH for ray–triangle intersection."""
@@ -405,9 +399,7 @@ class BVHNode:
                 self.right.ray_intersects(origin, direction, max_dist))
 
 
-# ---------------------------------------------------------------------------
 # Heat flux computation
-# ---------------------------------------------------------------------------
 
 def compute_heat_flux(
     faces:      list[Face],
@@ -468,9 +460,7 @@ def compute_heat_flux(
     return scalars, vectors
 
 
-# ---------------------------------------------------------------------------
 # Coloured PLY export
-# ---------------------------------------------------------------------------
 
 def export_ply(faces: list[Face], scalars: np.ndarray,
                output_path: Path,
@@ -527,9 +517,7 @@ def export_ply(faces: list[Face], scalars: np.ndarray,
     print(f"  Flux range   : 0 – {q_max:.1f} W/m²")
 
 
-# ---------------------------------------------------------------------------
 # PNG heat flux render (project onto camera)
-# ---------------------------------------------------------------------------
 
 def render_flux_png(faces: list[Face], scalars: np.ndarray,
                     camera_to_world: np.ndarray,
@@ -654,9 +642,7 @@ def render_flux_png(faces: list[Face], scalars: np.ndarray,
     print(f"    Drew {n_drawn}/{len(faces)} faces → {output_path.name}")
 
 
-# ---------------------------------------------------------------------------
 # Colorbar legend
-# ---------------------------------------------------------------------------
 
 def save_colorbar(q_max: float, output_path: Path,
                   width: int = 40, height: int = 256) -> None:
@@ -743,9 +729,7 @@ def get_day_timesteps(date: str, latitude: float, longitude: float) -> list[str]
     return [s.strftime("%Y-%m-%d %H:%M:%S") for s in steps]
 
 
-# ---------------------------------------------------------------------------
 # CLI entry point
-# ---------------------------------------------------------------------------
 
 @dataclass
 class HeatFluxParams:
