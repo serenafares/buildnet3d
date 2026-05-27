@@ -912,14 +912,32 @@ class HeatFluxRunner(HeatFluxParams):
             else:
                 E_sc = q_sc = np.zeros(len(faces))
 
+            # Use a shared colormap scale: incident is the ceiling.
+            # This way absorbed appears visually less intense than incident —
+            # windows (α=0.10) stay blue, roof (α=0.90) stays near-red.
+            # Both images are directly comparable.
+            shared_max = float(E_sc.max()) if E_sc.max() > 0 else 1.0
+            shared_min = float(E_sc.min())
+
+            def color_shared(scalars):
+                span = shared_max - shared_min
+                if span < 1e-6:
+                    norm = np.zeros_like(scalars)
+                else:
+                    norm = np.clip((scalars - shared_min) / span, 0, 1)
+                indices = (norm * 255).astype(int)
+                colors  = COLORMAP[indices].astype(np.float32)
+                colors  = colors * shading[:, None]
+                return np.clip(colors, 0, 255).astype(np.uint8)
+
             # Render incident (no absorptivity)
-            colors_inc = scalar_to_color(E_sc, shading)
+            colors_inc = color_shared(E_sc)
             if camera_pose is not None:
                 render_flux_png(faces, colors_inc, camera_pose, intrinsics,
                                 self.resolution, inc_dir / f"{fname}.png")
 
-            # Render absorbed (with absorptivity)
-            colors_abs = scalar_to_color(q_sc, shading)
+            # Render absorbed (with absorptivity — same scale as incident)
+            colors_abs = color_shared(q_sc)
             if camera_pose is not None:
                 render_flux_png(faces, colors_abs, camera_pose, intrinsics,
                                 self.resolution, abs_dir / f"{fname}.png")
