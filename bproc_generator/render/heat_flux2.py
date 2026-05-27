@@ -708,35 +708,31 @@ def get_day_timesteps(date: str, latitude: float, longitude: float,
     return [s.strftime("%Y-%m-%d %H:%M:%S") for s in steps]
 
 
-def _save_flux_outputs(faces, scalars, vectors, shading,
-                       out_dir: Path, label: str,
-                       camera_frames: list, intrinsics: np.ndarray,
-                       resolution: tuple) -> None:
-    """
-    Saves scalars.npy, vectors.npy, heat_flux.ply and PNG renders
-    into out_dir for one flux type (incident or absorbed).
-    """
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    np.save(out_dir / "scalars.npy", scalars)
-    np.save(out_dir / "vectors.npy", vectors)
-
-    colors = scalar_to_color(scalars, shading)
-    export_ply(faces, colors, out_dir / "heat_flux.ply")
-
-    for frame in camera_frames:
-        c2w   = np.array(frame["camera_to_world"])
-        idx   = frame["rgb_path"].replace(".png", "")
-        out_p = out_dir / f"{idx}_flux.png"
-        render_flux_png(faces, colors, c2w, intrinsics, resolution, out_p)
-
-    # Per-type colorbar (stretched to this frame's range)
-    q_min, q_max = float(scalars.min()), float(scalars.max())
-    save_colorbar(q_min, q_max, out_dir / f"colorbar_{label}.png")
-
-    print(f"  {label:10s}: {q_min:.1f}–{q_max:.1f} W/m²  "
-          f"mean={scalars.mean():.1f}  "
-          f"total={sum(scalars[i]*faces[i].area for i in range(len(faces))):.0f} W")
+# ─── Per-timestep output (commented out — kept for future use) ───────────────
+# def _save_flux_outputs(faces, scalars, vectors, shading,
+#                        out_dir: Path, label: str,
+#                        camera_frames: list, intrinsics: np.ndarray,
+#                        resolution: tuple) -> None:
+#     """
+#     Saves scalars.npy, vectors.npy, heat_flux.ply and PNG renders
+#     into out_dir for one flux type (incident or absorbed).
+#     Used by normal (non-video) mode — one subfolder per timestep.
+#     """
+#     out_dir.mkdir(parents=True, exist_ok=True)
+#     np.save(out_dir / "scalars.npy", scalars)
+#     np.save(out_dir / "vectors.npy", vectors)
+#     colors = scalar_to_color(scalars, shading)
+#     export_ply(faces, colors, out_dir / "heat_flux.ply")
+#     for frame in camera_frames:
+#         c2w   = np.array(frame["camera_to_world"])
+#         idx   = frame["rgb_path"].replace(".png", "")
+#         out_p = out_dir / f"{idx}_flux.png"
+#         render_flux_png(faces, colors, c2w, intrinsics, resolution, out_p)
+#     q_min, q_max = float(scalars.min()), float(scalars.max())
+#     save_colorbar(q_min, q_max, out_dir / f"colorbar_{label}.png")
+#     print(f"  {label:10s}: {q_min:.1f}–{q_max:.1f} W/m²  "
+#           f"mean={scalars.mean():.1f}  "
+#           f"total={sum(scalars[i]*faces[i].area for i in range(len(faces))):.0f} W")
 
 
 # ─── CLI entry point ──────────────────────────────────────────────────────────
@@ -802,21 +798,26 @@ class HeatFluxParams:
     """UTC date 'YYYY-MM-DD'. Civil twilight bounds computed automatically."""
     turbidity:        float = DEFAULT_TURBIDITY
     north_offset_deg: float = NORTH_OFFSET_DEG
-    output_path:      Path  = Path("outputs/generated")
-    """Same root as generate_try.py — heatflux/ subfolders added automatically."""
+    renders_path:     Path  = tyro.MISSING
+    """
+    Root folder containing the existing generate_try.py outputs
+    (the folder with 10h00/, 10h30/ ... subfolders and their meta_data.json).
+    Camera poses are read from here. Existing files are NEVER modified.
+    """
+    output_path:      Path  = tyro.MISSING
+    """
+    Destination folder for video frames.
+    Will contain:
+      output_path/incident/0000.png, 0001.png, ...
+      output_path/absorbed/0000.png, 0001.png, ...
+      output_path/summary.json
+    Can be anywhere — Desktop, Z: drive, etc.
+    """
     resolution:       tuple[int, int] = (512, 512)
     interval_minutes: int   = 30
-    """Timestep interval in minutes. Use 5–10 for video-quality output."""
-    video_mode:       bool  = False
-    """
-    If True, render only one camera pose (video_pose_index) and write all
-    timestep frames into a single flat folder:
-      output_path/video/incident/0000.png, 0001.png, …
-      output_path/video/absorbed/0000.png, 0001.png, …
-    Ready to stitch directly into a video with ffmpeg.
-    """
-    video_pose_index: int   = 11
-    """Which camera pose to use in video mode (0-based). Default = 11 (0011)."""
+    """Timestep interval in minutes. Use 5–10 for smoother video frames."""
+    pose_index:       int   = 11
+    """Which camera pose to use (0-based). Default = 11 (frame 0011)."""
 
 
 @dataclass
@@ -824,23 +825,27 @@ class HeatFluxRunner(HeatFluxParams):
 
     def run(self):
         print(f"\n{'═'*55}")
-        print(f"  Solar Heat Flux — {self.date}")
-        print(f"  Location : {self.latitude}°N  {self.longitude}°E  {self.altitude}m")
-        print(f"  Interval : {self.interval_minutes} min")
-        print(f"  Colormap : Turbo, per-frame histogram equalization")
+        print(f"  Solar Heat Flux — video frames")
+        print(f"  Date      : {self.date}")
+        print(f"  Location  : {self.latitude}°N  {self.longitude}°E  {self.altitude}m")
+        print(f"  Interval  : {self.interval_minutes} min")
+        print(f"  Pose      : #{self.pose_index}")
+        print(f"  Renders   : {self.renders_path}")
+        print(f"  Output    : {self.output_path}")
+        print(f"  Colormap  : Turbo, per-frame histogram equalization")
         print(f"{'═'*55}\n")
 
-        # ── Parse OBJ and build BVH (once) ───────────────────────────────
+        # ── Step 1: Parse OBJ and build BVH (once) ───────────────────────
         print(f"  Parsing OBJ : {self.obj_path}")
         faces = parse_obj(self.obj_path)
         print(f"  Faces       : {len(faces)}")
         print(f"  Building BVH...")
         bvh = BVHNode(faces)
 
-        # ── Pre-compute fixed shading (same for all timesteps) ────────────
+        # ── Step 2: Pre-compute fixed shading (same for all frames) ──────
         shading = compute_shading(faces)
 
-        # ── Timesteps ─────────────────────────────────────────────────────
+        # ── Step 3: Get timesteps ─────────────────────────────────────────
         timesteps = get_day_timesteps(
             self.date, self.latitude, self.longitude, self.interval_minutes)
         if not timesteps:
@@ -849,147 +854,113 @@ class HeatFluxRunner(HeatFluxParams):
         print(f"  Timesteps   : {len(timesteps)}  "
               f"({timesteps[0][11:16]} → {timesteps[-1][11:16]} UTC)\n")
 
-        # ── Load camera poses once (shared across all timesteps) ─────────
-        # Camera poses are identical for every timestep — generated once
-        # by generate_try.py regardless of the lighting interval.
-        # We search all existing timestep subfolders for the first
-        # meta_data.json we can find.
-        camera_frames: list = []
-        intrinsics: np.ndarray = np.eye(3)
+        # ── Step 4: Load camera pose (once, from renders_path) ────────────
+        # Search renders_path subfolders for any meta_data.json.
+        # All timesteps share identical poses so we only need one file.
+        camera_pose  = None   # single 4×4 matrix
+        intrinsics   = np.eye(3)
 
-        for dt in timesteps:
-            hhmm_search = dt[11:16].replace(":", "h")
-            candidate   = self.output_path / hhmm_search / "meta_data.json"
-            if candidate.exists():
-                with open(candidate) as f:
-                    rm = json.load(f)
-                camera_frames = rm["frames"]
-                intrinsics    = np.array(rm["frames"][0]["intrinsics"])
-                print(f"  Camera poses: {len(camera_frames)} frames "
-                      f"loaded from {hhmm_search}/meta_data.json")
-                break
+        for folder in sorted(self.renders_path.iterdir()):
+            meta = folder / "meta_data.json"
+            if not meta.exists():
+                continue
+            with open(meta) as f:
+                rm = json.load(f)
+            frames = rm.get("frames", [])
+            if self.pose_index >= len(frames):
+                print(f"  ⚠  pose_index={self.pose_index} out of range "
+                      f"(only {len(frames)} poses available). "
+                      f"Using last pose.")
+                camera_pose = np.array(frames[-1]["camera_to_world"])
+            else:
+                camera_pose = np.array(frames[self.pose_index]["camera_to_world"])
+            intrinsics = np.array(frames[0]["intrinsics"])
+            print(f"  Camera pose : #{self.pose_index} loaded from "
+                  f"{folder.name}/meta_data.json  "
+                  f"({len(frames)} poses available)")
+            break
 
-        if not camera_frames:
-            print("  ⚠  No meta_data.json found in any timestep subfolder "
-                  "— PLY and .npy will be saved but no PNG renders.")
+        if camera_pose is None:
+            print("  ⚠  No meta_data.json found in renders_path. "
+                  "Cannot render PNGs — only .npy files will be saved.")
 
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        day_summary = []
+        # ── Step 5: Create output folders ────────────────────────────────
+        inc_dir = self.output_path / "incident"
+        abs_dir = self.output_path / "absorbed"
+        inc_dir.mkdir(parents=True, exist_ok=True)
+        abs_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── Timestep loop ─────────────────────────────────────────────────
-        for date_time in timesteps:
-            hhmm      = date_time[11:16].replace(":", "h")
-            step_path = self.output_path / hhmm
-            print(f"\n  ── {hhmm}  ({'─'*40}")
+        # ── Step 6: Loop over timesteps ───────────────────────────────────
+        summary = []
+
+        for frame_idx, date_time in enumerate(timesteps):
+            fname = str(frame_idx).zfill(4)
+            hhmm  = date_time[11:16]
+            print(f"  [{fname}] {hhmm} UTC", end="  ")
 
             sol = get_solar_irradiance(
                 self.latitude, self.longitude, self.altitude,
                 date_time, self.turbidity)
-            print(f"  el={sol['elevation']:+.1f}°  "
+            print(f"el={sol['elevation']:+.1f}°  "
                   f"DNI={sol['dni']:.0f}  DHI={sol['dhi']:.0f} W/m²")
 
             if sol["sun_above_horizon"] or sol["in_civil_twilight"]:
                 sv = sun_direction_vector(
                     sol["azimuth"], sol["elevation"], self.north_offset_deg)
-                E_sc, E_vec, q_sc, q_vec = compute_heat_flux(
+                E_sc, _, q_sc, _ = compute_heat_flux(
                     faces, sv, sol["dni"], sol["dhi"], bvh)
             else:
-                N = len(faces)
-                E_sc = q_sc = np.zeros(N)
-                E_vec = q_vec = np.zeros((N, 3))
+                E_sc = q_sc = np.zeros(len(faces))
 
-            if self.video_mode:
-                # ── Video mode: one pose, flat output folder ──────────────
-                # All frames go into output_path/video/incident/ and
-                # output_path/video/absorbed/ named by frame index (e.g.
-                # 0000.png = timestep 0, 0001.png = timestep 1, …).
-                # Ready to stitch with:
-                #   ffmpeg -r 10 -i %04d.png -pix_fmt yuv420p video.mp4
-                frame_idx   = str(timesteps.index(date_time)).zfill(4)
-                single_pose = ([camera_frames[self.video_pose_index]]
-                               if camera_frames and
-                               self.video_pose_index < len(camera_frames)
-                               else [])
+            # Render incident (no absorptivity)
+            colors_inc = scalar_to_color(E_sc, shading)
+            if camera_pose is not None:
+                render_flux_png(faces, colors_inc, camera_pose, intrinsics,
+                                self.resolution, inc_dir / f"{fname}.png")
 
-                for label, scalars in [("incident", E_sc), ("absorbed", q_sc)]:
-                    vdir = self.output_path / "video" / label
-                    vdir.mkdir(parents=True, exist_ok=True)
-                    if single_pose:
-                        colors = scalar_to_color(scalars, shading)
-                        c2w    = np.array(single_pose[0]["camera_to_world"])
-                        render_flux_png(faces, colors, c2w, intrinsics,
-                                        self.resolution, vdir / f"{frame_idx}.png")
-                    np.save(vdir / f"{frame_idx}_scalars.npy", scalars)
+            # Render absorbed (with absorptivity)
+            colors_abs = scalar_to_color(q_sc, shading)
+            if camera_pose is not None:
+                render_flux_png(faces, colors_abs, camera_pose, intrinsics,
+                                self.resolution, abs_dir / f"{fname}.png")
 
-                print(f"  video frame {frame_idx}  "
-                      f"E={E_sc.max():.0f}  q={q_sc.max():.0f} W/m²")
-
-            else:
-                # ── Normal mode: per-timestep subfolder ───────────────────
-                inc_dir = step_path / "heatflux" / "incident"
-                _save_flux_outputs(faces, E_sc, E_vec, shading, inc_dir,
-                                   "incident", camera_frames, intrinsics,
-                                   self.resolution)
-
-                abs_dir = step_path / "heatflux" / "absorbed"
-                _save_flux_outputs(faces, q_sc, q_vec, shading, abs_dir,
-                                   "absorbed", camera_frames, intrinsics,
-                                   self.resolution)
-
-            # ── Metadata (always written, both modes) ─────────────────────
-            if self.video_mode:
-                meta_dir = self.output_path / "video"
-            else:
-                meta_dir = step_path / "heatflux"
-            meta_dir.mkdir(parents=True, exist_ok=True)
-
-            frame_idx_for_meta = str(timesteps.index(date_time)).zfill(4)
-            meta_key = frame_idx_for_meta if self.video_mode else "meta_data"
-            with open(meta_dir / f"{meta_key}_meta.json", "w") as f:
-                json.dump({
-                    "date_time":           date_time,
-                    "frame_index":         timesteps.index(date_time),
-                    "solar_elevation":     sol["elevation"],
-                    "solar_azimuth":       sol["azimuth"],
-                    "DNI_Wm2":             sol["dni"],
-                    "DHI_Wm2":             sol["dhi"],
-                    "incident_min_Wm2":    float(E_sc.min()),
-                    "incident_max_Wm2":    float(E_sc.max()),
-                    "incident_mean_Wm2":   float(E_sc.mean()),
-                    "absorbed_min_Wm2":    float(q_sc.min()),
-                    "absorbed_max_Wm2":    float(q_sc.max()),
-                    "absorbed_mean_Wm2":   float(q_sc.mean()),
-                    "total_incident_W":    float(sum(E_sc[i]*faces[i].area for i in range(len(faces)))),
-                    "total_absorbed_W":    float(sum(q_sc[i]*faces[i].area for i in range(len(faces)))),
-                    "colormap":            "turbo_histogram_eq",
-                }, f, indent=4)
-
-            day_summary.append({
-                "time_utc":         date_time,
-                "hhmm":             hhmm,
-                "elevation":        sol["elevation"],
+            # Per-frame metadata
+            summary.append({
+                "frame":            frame_idx,
+                "filename":         f"{fname}.png",
+                "date_time":        date_time,
+                "solar_elevation":  sol["elevation"],
+                "solar_azimuth":    sol["azimuth"],
                 "DNI_Wm2":          sol["dni"],
                 "DHI_Wm2":          sol["dhi"],
                 "incident_max":     float(E_sc.max()),
                 "absorbed_max":     float(q_sc.max()),
-                "total_incident_W": float(sum(E_sc[i]*faces[i].area for i in range(len(faces)))),
-                "total_absorbed_W": float(sum(q_sc[i]*faces[i].area for i in range(len(faces)))),
             })
 
-        # ── Day summary ───────────────────────────────────────────────────
-        with open(self.output_path / "heatflux_day_summary.json", "w") as f:
+        # ── Step 7: Write summary ─────────────────────────────────────────
+        with open(self.output_path / "summary.json", "w") as f:
             json.dump({
                 "date":             self.date,
                 "latitude":         self.latitude,
                 "longitude":        self.longitude,
+                "pose_index":       self.pose_index,
                 "interval_minutes": self.interval_minutes,
+                "total_frames":     len(timesteps),
                 "colormap":         "turbo_histogram_eq",
-                "timesteps":        day_summary,
+                "ffmpeg_command":   (
+                    f"ffmpeg -r 10 -i {self.output_path}/incident/%04d.png "
+                    f"-pix_fmt yuv420p {self.output_path}/incident.mp4"
+                ),
+                "frames":           summary,
             }, f, indent=4)
 
         print(f"\n{'═'*55}")
-        print(f"  Done. {len(timesteps)} timesteps.")
-        print(f"  Summary → {self.output_path / 'heatflux_day_summary.json'}")
+        print(f"  Done. {len(timesteps)} frames.")
+        print(f"  incident/ → {inc_dir}")
+        print(f"  absorbed/ → {abs_dir}")
+        print(f"  To make video:")
+        print(f"  ffmpeg -r 10 -i \"{inc_dir}\\%04d.png\" "
+              f"-pix_fmt yuv420p \"{self.output_path}\\incident.mp4\"")
         print(f"{'═'*55}\n")
 
 
