@@ -852,18 +852,16 @@ class BlenderProcRenderer(RenderParams):
                 "Run the full generate_try.py pipeline first to generate camera poses."
             )
 
-        # Register poses with BlenderProc
-        for fm in frames_meta:
-            c2w  = np.array(fm["camera_to_world"])
-            pose = bproc.math.build_transformation_mat(c2w[:3, 3], c2w[:3, :3])
-            bproc.camera.add_camera_pose(pose, self.camera_idx)
-            self.camera_list.append(c2w)
-            self.camera_idx += 1
+        # Register ONLY pose_index with BlenderProc — renders one image per timestep
+        pose_i = min(self.pose_index, len(frames_meta) - 1)
+        fm     = frames_meta[pose_i]
+        c2w    = np.array(fm["camera_to_world"])
+        pose   = bproc.math.build_transformation_mat(c2w[:3, 3], c2w[:3, :3])
+        bproc.camera.add_camera_pose(pose, 0)
+        self.camera_list.append(c2w)
+        self.camera_idx = 1
 
-        print(f"  Registered  : {self.camera_idx} poses with BlenderProc")
-
-        pose_i = min(self.pose_index, self.camera_idx - 1)
-        print(f"  Video pose  : #{pose_i}\n")
+        print(f"  Registered  : pose #{pose_i} only (1 image per timestep)\n")
 
         # ── Step 2: Register render passes (once) ─────────────────────────
         bproc.renderer.set_output_format(
@@ -903,20 +901,15 @@ class BlenderProcRenderer(RenderParams):
             tmp_path.mkdir(exist_ok=True)
             bproc.writer.write_hdf5(str(tmp_path), render_data)
 
-            hdf5_file = tmp_path / f"{pose_i}.hdf5"
+            hdf5_file = tmp_path / "0.hdf5"
             if hdf5_file.exists():
                 with h5py.File(hdf5_file, "r") as f:
                     rgb = np.array(f["colors"][:])
                 Image.fromarray(rgb).save(video_dir / f"{frame_idx:04d}.png")
+                hdf5_file.unlink()
                 print(f"→ {frame_idx:04d}.png")
             else:
-                print(f"⚠  HDF5 not found for pose {pose_i}")
-
-            # Clean up all HDF5 files
-            for i in range(self.camera_idx):
-                p = tmp_path / f"{i}.hdf5"
-                if p.exists():
-                    p.unlink()
+                print(f"⚠  HDF5 not found")
 
             irr = self.irradiance
             video_frames_log.append({
