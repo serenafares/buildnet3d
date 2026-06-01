@@ -608,7 +608,7 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
     W, H  = resolution
     img   = np.zeros((H, W, 3), dtype=np.uint8)
     zbuf  = np.full((H, W), np.inf, dtype=np.float64)
-    Z_BIAS = 1e-4
+    Z_BIAS = 1e-3
 
     c2w = np.array(camera_to_world, dtype=np.float64)
     w2c = np.linalg.inv(c2w)
