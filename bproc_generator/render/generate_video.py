@@ -95,7 +95,7 @@ class RenderParams:
     """
     pose_index: int = 11
     """
-    Which camera pose to extract for the video folder (0-based).
+    Which camera pose to extract into the flat video/rgb/ folder (0-based).
     Default = 11 (frame 0011). All poses are still rendered and saved to
     the per-timestep subfolders as usual.
     """
@@ -333,31 +333,22 @@ def get_day_timesteps(date: str, latitude: float, longitude: float,
 
     Parameters
     ----------
-    date : str
-        Date string "YYYY-MM-DD".
-    latitude, longitude : float
-        Geographic coordinates used to compute solar position.
-    interval_minutes : int
-        Timestep interval in minutes. Default = 30.
-
-    Returns
-    -------
-    list[str]
-        Sorted list of UTC datetime strings "YYYY-MM-DD HH:MM:SS".
+    date : str              Date string "YYYY-MM-DD".
+    latitude, longitude     Geographic coordinates.
+    interval_minutes : int  Timestep interval. Default = 30.
 
     Examples
     --------
-    Lausanne (46.5°N), June 21, 30 min → 34 steps, 03:30–20:00 UTC
-    Lausanne (46.5°N), June 21,  5 min → ~198 steps, 03:30–20:00 UTC
-    Lausanne (46.5°N), Dec  21, 30 min → 19 steps, 07:00–16:00 UTC
+    Lausanne, June 21, 30 min → 34 steps  (03:30–20:00 UTC)
+    Lausanne, June 21,  5 min → ~198 steps
+    Lausanne, Dec  21, 30 min → 19 steps  (07:00–16:00 UTC)
     """
-    # Sample every 10 min to locate civil twilight bounds precisely
     times = pd.date_range(f"{date} 00:00", f"{date} 23:59", freq="10min", tz="UTC")
     solar = pvlib.solarposition.get_solarposition(times, latitude, longitude)
     lit   = solar[solar["apparent_zenith"] <= CIVIL_TWILIGHT_ZENITH]
 
     if lit.empty:
-        return []  # polar night — no renderable timesteps
+        return []
 
     first_utc = lit.index[0]
     last_utc  = lit.index[-1]
@@ -375,10 +366,9 @@ def get_day_timesteps(date: str, latitude: float, longitude: float,
         return dt.replace(
             minute=(dt.minute // m) * m, second=0, microsecond=0)
 
-    start = _round_up(first_utc)
-    end   = _round_down(last_utc)
-
-    steps = pd.date_range(start, end, freq=f"{interval_minutes}min")
+    steps = pd.date_range(
+        _round_up(first_utc), _round_down(last_utc),
+        freq=f"{interval_minutes}min")
     return [s.strftime("%Y-%m-%d %H:%M:%S") for s in steps]
 
 
@@ -796,15 +786,15 @@ class BlenderProcRenderer(RenderParams):
     def save_video_frame(self, frame_idx: int, video_dir: Path,
                           hdf5_path: Path):
         """
-        Extracts only pose_index from the current HDF5 render batch and saves
-        it as a zero-padded PNG into video_dir/rgb/.
-        Does NOT delete HDF5 files — save_images() handles that.
+        Extracts only pose_index from the current HDF5 batch and saves it
+        as a zero-padded PNG into video_dir/rgb/.
+        Called BEFORE save_images() which deletes the HDF5 files.
 
         Parameters
         ----------
-        frame_idx  : int   — sequential video frame number (0, 1, 2, …)
-        video_dir  : Path  — output_path/video/
-        hdf5_path  : Path  — folder where BlenderProc wrote the HDF5 files
+        frame_idx : int   Sequential video frame number (0, 1, 2, …)
+        video_dir : Path  output_path/video/
+        hdf5_path : Path  Folder where BlenderProc wrote the HDF5 files
         """
         rgb_dir = video_dir / "rgb"
         rgb_dir.mkdir(parents=True, exist_ok=True)
@@ -815,27 +805,22 @@ class BlenderProcRenderer(RenderParams):
         if hdf5_file.exists():
             with h5py.File(hdf5_file, "r") as f:
                 rgb = np.array(f["colors"][:])
-            out_p = rgb_dir / f"{frame_idx:04d}.png"
-            Image.fromarray(rgb).save(out_p)
+            Image.fromarray(rgb).save(rgb_dir / f"{frame_idx:04d}.png")
             print(f"  video frame {frame_idx:04d} → rgb/{frame_idx:04d}.png  "
                   f"(pose #{pose_i})")
         else:
-            print(f"  ⚠  HDF5 not found for pose {pose_i} — skipping video frame")
+            print(f"  ⚠  HDF5 not found for pose {pose_i} — skipping frame")
 
     def run(self):
         """
         Main rendering pipeline execution.
 
-        Phase 1 — Camera generation (runs ONCE for the whole day):
-            Generate num_frames valid camera poses around the building.
-            Camera poses are shared across all timesteps.
-
-        Phase 2 — Timestep loop (runs once per interval_minutes step):
-            For each UTC timestep between civil twilight bounds:
-              1. Update lighting (sun position, color, energy)
-              2. Re-render the identical camera poses under new lighting
-              3. Save images + metadata to a dedicated subfolder
-              4. Extract pose_index frame into video/rgb/ flat folder
+        Phase 1 — Camera generation (runs ONCE for the whole day).
+        Phase 2 — Timestep loop at interval_minutes steps:
+            1. Update lighting
+            2. Render all poses
+            3. Extract pose_index → video/rgb/XXXX.png  (flat folder)
+            4. Save all images + metadata → hhmm/ subfolder
 
         Output structure:
             output_path/
@@ -846,13 +831,10 @@ class BlenderProcRenderer(RenderParams):
                         0001.png
                         ...
                     summary.json
-                10h00/             (only if interval_minutes=30)
-                    images/
-                    normals/
-                    ...
+                03h30/
+                    images/  normals/  depths/  semantics/  instances/
                     meta_data.json
-                10h05/             (if interval_minutes=5)
-                    ...
+                03h35/  ...  (if interval_minutes=5)
         """
         # ── Phase 1: Generate camera poses (once) ────────────────────────
         poi = bproc.object.compute_poi(self.scene_objects)
@@ -862,7 +844,6 @@ class BlenderProcRenderer(RenderParams):
         for _ in range(self.num_frames):
             self.generate_camera_pose(poi)
 
-        # Snapshot frame metadata — same poses reused at every timestep
         frames_meta = [
             {
                 "rgb_path":          f"{i:04d}.png",
@@ -873,7 +854,6 @@ class BlenderProcRenderer(RenderParams):
             for i in range(self.camera_idx)
         ]
 
-        # Register output passes once
         bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)
         bproc.renderer.enable_depth_output(activate_antialiasing=False)
         bproc.renderer.enable_normals_output()
@@ -891,9 +871,9 @@ class BlenderProcRenderer(RenderParams):
         print(f"  Video pose      : #{self.pose_index}")
         print(f"{'═' * 55}\n")
 
-        video_dir   = self.output_path / "video"
-        day_summary = []
-        video_frames_meta = []
+        video_dir        = self.output_path / "video"
+        day_summary      = []
+        video_frames_log = []
 
         for frame_idx, date_time in enumerate(timesteps):
             hhmm      = date_time[11:16].replace(":", "h")
@@ -912,11 +892,10 @@ class BlenderProcRenderer(RenderParams):
             # 3. Extract video frame BEFORE save_images deletes HDF5s
             self.save_video_frame(frame_idx, video_dir, step_path)
 
-            # 4. Save all images + metadata to timestep subfolder
+            # 4. Save all images + metadata
             self.save_images(step_path, step_path)
             self.save_metadata(step_path, date_time, frames_meta)
 
-            # 5. Record solar values
             irr = self.irradiance
             day_summary.append({
                 "time_utc":          date_time,
@@ -929,15 +908,13 @@ class BlenderProcRenderer(RenderParams):
                 "GHI_Wm2":           irr.get("ghi_correct"),
                 "in_civil_twilight": irr.get("in_civil_twilight"),
             })
-            video_frames_meta.append({
-                "frame":      frame_idx,
-                "filename":   f"{frame_idx:04d}.png",
-                "date_time":  date_time,
-                "hhmm":       hhmm,
-                "elevation":  irr.get("elevation"),
-                "azimuth":    irr.get("azimuth"),
-                "DNI_Wm2":    irr.get("dni"),
-                "DHI_Wm2":    irr.get("dhi"),
+            video_frames_log.append({
+                "frame":     frame_idx,
+                "filename":  f"{frame_idx:04d}.png",
+                "date_time": date_time,
+                "elevation": irr.get("elevation"),
+                "DNI_Wm2":   irr.get("dni"),
+                "DHI_Wm2":   irr.get("dhi"),
             })
 
         # ── Write day summary ─────────────────────────────────────────────
@@ -965,7 +942,7 @@ class BlenderProcRenderer(RenderParams):
                     f"ffmpeg -r 10 -i \"{video_dir}\\rgb\\%04d.png\" "
                     f"-pix_fmt yuv420p \"{video_dir}\\rgb.mp4\""
                 ),
-                "frames": video_frames_meta,
+                "frames": video_frames_log,
             }, f, indent=4)
 
         print(f"\n{'═' * 55}")
