@@ -653,7 +653,7 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
         denom = ax*by - ay*bx
         if abs(denom) < 1e-8: continue
 
-        EDGE_EPS = 0.02
+        EDGE_EPS = 0.01
         Z_BIAS = 1e-3
 
         for y in range(ymin, ymax + 1):
