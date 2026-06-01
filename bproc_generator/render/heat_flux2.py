@@ -66,7 +66,6 @@ import pvlib
 import pandas as pd
 from PIL import Image
 import tyro
-from PIL import Image, ImageFilter
 
 
 
@@ -660,8 +659,8 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
                     # if depth < zbuf[y, x]:
                     #     zbuf[y, x]   = depth
                     #     img[y, x, :] = color
-                    if depth < zbuf[y, x] - Z_BIAS:
-                        zbuf[y, x]   = depth
+                    if depth <= zbuf[y, x] + Z_BIAS:
+                        zbuf[y, x]   = min(depth, zbuf[y, x])
                         img[y, x, :] = color
         n_drawn += 1
 
