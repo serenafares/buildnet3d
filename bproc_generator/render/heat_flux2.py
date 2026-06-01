@@ -609,7 +609,7 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
     W, H  = resolution
     img   = np.zeros((H, W, 3), dtype=np.uint8)
     zbuf  = np.full((H, W), np.inf, dtype=np.float64)
-    Z_EPS = 1e-3
+    Z_BIAS = 1e-4
 
     c2w = np.array(camera_to_world, dtype=np.float64)
     w2c = np.linalg.inv(c2w)
@@ -660,16 +660,9 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
                     # if depth < zbuf[y, x]:
                     #     zbuf[y, x]   = depth
                     #     img[y, x, :] = color
-                    if depth < zbuf[y, x] - Z_EPS:
+                    if depth < zbuf[y, x] - Z_BIAS:
                         zbuf[y, x]   = depth
                         img[y, x, :] = color
-                    elif abs(depth - zbuf[y, x]) <= Z_EPS:
-                        # Nearly same depth: avoid flickering/z-fighting gaps.
-                        # Blend with existing color instead of replacing unpredictably.
-                        if np.any(img[y, x, :]):
-                            img[y, x, :] = ((img[y, x, :].astype(np.uint16) + color.astype(np.uint16)) // 2).astype(np.uint8)
-                        else:
-                            img[y, x, :] = color
         n_drawn += 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
