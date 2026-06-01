@@ -99,6 +99,13 @@ class RenderParams:
     Default = 11 (frame 0011). All poses are still rendered and saved to
     the per-timestep subfolders as usual.
     """
+    skip_camera_generation: bool = False
+    """
+    If True, skip Phase 1 (camera pose generation) and load existing poses
+    from the first meta_data.json found in output_path subfolders.
+    Use this when re-running the pipeline on an existing renders folder
+    to avoid regenerating camera poses from scratch.
+    """
 
     # Lighting calibration
     k_sun: float = K_SUN
@@ -836,23 +843,62 @@ class BlenderProcRenderer(RenderParams):
                     meta_data.json
                 03h35/  ...  (if interval_minutes=5)
         """
-        # ── Phase 1: Generate camera poses (once) ────────────────────────
-        poi = bproc.object.compute_poi(self.scene_objects)
-        print(f"\n{'═' * 55}")
-        print(f"  Generating {self.num_frames} camera poses (runs once for the day)")
-        print(f"{'═' * 55}")
-        for _ in range(self.num_frames):
-            self.generate_camera_pose(poi)
+        # ── Phase 1: Camera poses ─────────────────────────────────────────
+        if self.skip_camera_generation:
+            # Load existing poses from the first meta_data.json found
+            print(f"\n{'═' * 55}")
+            print(f"  Loading existing camera poses from {self.output_path}")
+            print(f"{'═' * 55}")
 
-        frames_meta = [
-            {
-                "rgb_path":          f"{i:04d}.png",
-                "segmentation_path": f"{i:04d}_mask.png",
-                "camera_to_world":   self.camera_list[i].tolist(),
-                "intrinsics":        bproc.camera.get_intrinsics_as_K_matrix().tolist(),
-            }
-            for i in range(self.camera_idx)
-        ]
+            frames_meta = None
+            for folder in sorted(self.output_path.iterdir()):
+                meta = folder / "meta_data.json"
+                if not meta.exists():
+                    continue
+                with open(meta) as f:
+                    md = json.load(f)
+                frames_meta = md.get("frames", [])
+                print(f"  Loaded {len(frames_meta)} poses from "
+                      f"{folder.name}/meta_data.json")
+                break
+
+            if not frames_meta:
+                raise RuntimeError(
+                    "skip_camera_generation=True but no meta_data.json "
+                    f"found in {self.output_path}. "
+                    "Run without --skip-camera-generation first."
+                )
+
+            # Re-register the existing poses with BlenderProc
+            for fm in frames_meta:
+                c2w  = np.array(fm["camera_to_world"])
+                pose = bproc.math.build_transformation_mat(
+                    c2w[:3, 3], c2w[:3, :3])
+                bproc.camera.add_camera_pose(pose, self.camera_idx)
+                self.camera_list.append(c2w)
+                self.camera_idx += 1
+
+            print(f"  Re-registered {self.camera_idx} poses with BlenderProc\n")
+
+        else:
+            # Generate new camera poses from scratch
+            poi = bproc.object.compute_poi(self.scene_objects)
+            print(f"\n{'═' * 55}")
+            print(f"  Generating {self.num_frames} camera poses "
+                  f"(runs once for the day)")
+            print(f"{'═' * 55}")
+            for _ in range(self.num_frames):
+                self.generate_camera_pose(poi)
+
+            frames_meta = [
+                {
+                    "rgb_path":          f"{i:04d}.png",
+                    "segmentation_path": f"{i:04d}_mask.png",
+                    "camera_to_world":   self.camera_list[i].tolist(),
+                    "intrinsics":        bproc.camera.get_intrinsics_as_K_matrix().tolist(),
+                }
+                for i in range(self.camera_idx)
+            ]
 
         bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)
         bproc.renderer.enable_depth_output(activate_antialiasing=False)
