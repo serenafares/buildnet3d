@@ -609,6 +609,7 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
     img   = np.zeros((H, W, 3), dtype=np.uint8)
     zbuf  = np.full((H, W), np.inf, dtype=np.float64)
     Z_BIAS = 1e-3
+    EDGE_EPS = 0.75 
 
     c2w = np.array(camera_to_world, dtype=np.float64)
     w2c = np.linalg.inv(c2w)
@@ -655,7 +656,8 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
                 px,py = x-p0[0], y-p0[1]
                 u = (px*by - py*bx) / denom
                 v = (ax*py - ay*px) / denom
-                if u >= 0 and v >= 0 and (u+v) <= 1:
+                # if u >= 0 and v >= 0 and (u+v) <= 1:
+                if u >= -EDGE_EPS and v >= -EDGE_EPS and (u + v) <= 1 + EDGE_EPS:
                     # if depth < zbuf[y, x]:
                     #     zbuf[y, x]   = depth
                     #     img[y, x, :] = color
