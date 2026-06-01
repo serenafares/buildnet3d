@@ -66,6 +66,8 @@ import pvlib
 import pandas as pd
 from PIL import Image
 import tyro
+from PIL import Image, ImageFilter
+
 
 
 # ─── Physical constants ───────────────────────────────────────────────────────
@@ -607,6 +609,7 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
     W, H  = resolution
     img   = np.zeros((H, W, 3), dtype=np.uint8)
     zbuf  = np.full((H, W), np.inf, dtype=np.float64)
+    Z_EPS = 1e-3
 
     c2w = np.array(camera_to_world, dtype=np.float64)
     w2c = np.linalg.inv(c2w)
@@ -654,9 +657,19 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
                 u = (px*by - py*bx) / denom
                 v = (ax*py - ay*px) / denom
                 if u >= 0 and v >= 0 and (u+v) <= 1:
-                    if depth < zbuf[y, x]:
+                    # if depth < zbuf[y, x]:
+                    #     zbuf[y, x]   = depth
+                    #     img[y, x, :] = color
+                    if depth < zbuf[y, x] - Z_EPS:
                         zbuf[y, x]   = depth
                         img[y, x, :] = color
+                    elif abs(depth - zbuf[y, x]) <= Z_EPS:
+                        # Nearly same depth: avoid flickering/z-fighting gaps.
+                        # Blend with existing color instead of replacing unpredictably.
+                        if np.any(img[y, x, :]):
+                            img[y, x, :] = ((img[y, x, :].astype(np.uint16) + color.astype(np.uint16)) // 2).astype(np.uint8)
+                        else:
+                            img[y, x, :] = color
         n_drawn += 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
