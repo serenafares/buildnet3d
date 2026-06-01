@@ -79,32 +79,26 @@ class RenderParams:
     longitude: float = tyro.MISSING
     """Building location longitude [decimal degrees]."""
     altitude:  float = 400.0
-    """Building altitude above sea level [m].  Used by the Ineichen model."""
+    """Building altitude above sea level [m]."""
     date: str = tyro.MISSING
-    """
-    UTC date for the full-day render loop: 'YYYY-MM-DD'.
-    The pipeline automatically computes civil twilight bounds for this date
-    and generates one render per timestep between them.
-    """
+    """UTC date for the full-day render loop: 'YYYY-MM-DD'."""
     turbidity: float = DEFAULT_TURBIDITY
     """Linke turbidity factor (2 = very clear, 3 = typical, 5 = hazy)."""
     interval_minutes: int = 30
-    """
-    Timestep interval in minutes.
-    Use 30 for the standard full dataset, 5–10 for video-quality output.
-    """
+    """Timestep interval in minutes. Use 5–10 for video-quality output."""
     pose_index: int = 11
+    """Which camera pose to save into video/rgb/ (0-based). Default = 11."""
+    renders_path: Path = tyro.MISSING
     """
-    Which camera pose to extract into the flat video/rgb/ folder (0-based).
-    Default = 11 (frame 0011). All poses are still rendered and saved to
-    the per-timestep subfolders as usual.
+    Root folder of existing generate_try.py outputs — the folder containing
+    10h00/, 10h30/ ... subfolders. Camera poses are loaded from the first
+    meta_data.json found here. Existing files are NEVER modified.
     """
-    skip_camera_generation: bool = False
+    output_path: Path = tyro.MISSING
     """
-    If True, skip Phase 1 (camera pose generation) and load existing poses
-    from the first meta_data.json found in output_path subfolders.
-    Use this when re-running the pipeline on an existing renders folder
-    to avoid regenerating camera poses from scratch.
+    Destination folder for video frames:
+      output_path/video/rgb/0000.png, 0001.png, ...
+      output_path/video/summary.json
     """
 
     # Lighting calibration
@@ -820,140 +814,111 @@ class BlenderProcRenderer(RenderParams):
 
     def run(self):
         """
-        Main rendering pipeline execution.
+        Loads existing camera poses from renders_path, then loops over
+        timesteps updating lighting and rendering one video frame per step.
 
-        Phase 1 — Camera generation (runs ONCE for the whole day).
-        Phase 2 — Timestep loop at interval_minutes steps:
-            1. Update lighting
-            2. Render all poses
-            3. Extract pose_index → video/rgb/XXXX.png  (flat folder)
-            4. Save all images + metadata → hhmm/ subfolder
+        No camera pose generation — poses come from renders_path/*/meta_data.json.
 
-        Output structure:
-            output_path/
-                day_summary.json
-                video/
-                    rgb/
-                        0000.png   ← frame 0, pose_index only
-                        0001.png
-                        ...
-                    summary.json
-                03h30/
-                    images/  normals/  depths/  semantics/  instances/
-                    meta_data.json
-                03h35/  ...  (if interval_minutes=5)
+        Output:
+            output_path/video/rgb/0000.png, 0001.png, ...
+            output_path/video/summary.json
         """
-        # ── Phase 1: Camera poses ─────────────────────────────────────────
-        if self.skip_camera_generation:
-            # Load existing poses from the first meta_data.json found
-            print(f"\n{'═' * 55}")
-            print(f"  Loading existing camera poses from {self.output_path}")
-            print(f"{'═' * 55}")
-
-            frames_meta = None
-            for folder in sorted(self.output_path.iterdir()):
-                meta = folder / "meta_data.json"
-                if not meta.exists():
-                    continue
-                with open(meta) as f:
-                    md = json.load(f)
-                frames_meta = md.get("frames", [])
-                print(f"  Loaded {len(frames_meta)} poses from "
-                      f"{folder.name}/meta_data.json")
-                break
-
-            if not frames_meta:
-                raise RuntimeError(
-                    "skip_camera_generation=True but no meta_data.json "
-                    f"found in {self.output_path}. "
-                    "Run without --skip-camera-generation first."
-                )
-
-            # Re-register the existing poses with BlenderProc
-            for fm in frames_meta:
-                c2w  = np.array(fm["camera_to_world"])
-                pose = bproc.math.build_transformation_mat(
-                    c2w[:3, 3], c2w[:3, :3])
-                bproc.camera.add_camera_pose(pose, self.camera_idx)
-                self.camera_list.append(c2w)
-                self.camera_idx += 1
-
-            print(f"  Re-registered {self.camera_idx} poses with BlenderProc\n")
-
-        else:
-            # Generate new camera poses from scratch
-            poi = bproc.object.compute_poi(self.scene_objects)
-            print(f"\n{'═' * 55}")
-            print(f"  Generating {self.num_frames} camera poses "
-                  f"(runs once for the day)")
-            print(f"{'═' * 55}")
-            for _ in range(self.num_frames):
-                self.generate_camera_pose(poi)
-
-            frames_meta = [
-                {
-                    "rgb_path":          f"{i:04d}.png",
-                    "segmentation_path": f"{i:04d}_mask.png",
-                    "camera_to_world":   self.camera_list[i].tolist(),
-                    "intrinsics":        bproc.camera.get_intrinsics_as_K_matrix().tolist(),
-                }
-                for i in range(self.camera_idx)
-            ]
-
-        bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)
-        bproc.renderer.enable_depth_output(activate_antialiasing=False)
-        bproc.renderer.enable_normals_output()
-        bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
-
-        # ── Phase 2: Timestep loop ────────────────────────────────────────
-        timesteps = get_day_timesteps(
-            self.date, self.latitude, self.longitude, self.interval_minutes)
-
         print(f"\n{'═' * 55}")
-        print(f"  Date            : {self.date}")
-        print(f"  Interval        : {self.interval_minutes} min")
-        print(f"  Renderable steps: {len(timesteps)}  "
-              f"({timesteps[0][11:16]} → {timesteps[-1][11:16]} UTC)")
-        print(f"  Video pose      : #{self.pose_index}")
+        print(f"  Date      : {self.date}")
+        print(f"  Location  : {self.latitude}°N  {self.longitude}°E")
+        print(f"  Interval  : {self.interval_minutes} min")
+        print(f"  Pose      : #{self.pose_index}")
+        print(f"  Renders   : {self.renders_path}")
+        print(f"  Output    : {self.output_path}")
         print(f"{'═' * 55}\n")
 
-        video_dir        = self.output_path / "video"
-        day_summary      = []
+        # ── Step 1: Load camera poses from renders_path (once) ────────────
+        # Identical to heat_flux.py — scan subfolders for first meta_data.json
+        frames_meta  = None
+        for folder in sorted(self.renders_path.iterdir()):
+            meta = folder / "meta_data.json"
+            if not meta.exists():
+                continue
+            with open(meta) as f:
+                md = json.load(f)
+            frames_meta = md.get("frames", [])
+            print(f"  Camera poses: {len(frames_meta)} loaded from "
+                  f"{folder.name}/meta_data.json")
+            break
+
+        if not frames_meta:
+            raise RuntimeError(
+                f"No meta_data.json found in any subfolder of {self.renders_path}.\n"
+                "Run the full generate_try.py pipeline first to generate camera poses."
+            )
+
+        # Register poses with BlenderProc
+        for fm in frames_meta:
+            c2w  = np.array(fm["camera_to_world"])
+            pose = bproc.math.build_transformation_mat(c2w[:3, 3], c2w[:3, :3])
+            bproc.camera.add_camera_pose(pose, self.camera_idx)
+            self.camera_list.append(c2w)
+            self.camera_idx += 1
+
+        print(f"  Registered  : {self.camera_idx} poses with BlenderProc")
+
+        pose_i = min(self.pose_index, self.camera_idx - 1)
+        print(f"  Video pose  : #{pose_i}\n")
+
+        # ── Step 2: Register render passes (once) ─────────────────────────
+        bproc.renderer.set_output_format(
+            enable_transparency=self.enable_transparency)
+        bproc.renderer.enable_depth_output(activate_antialiasing=False)
+        bproc.renderer.enable_normals_output()
+        bproc.renderer.enable_segmentation_output(
+            map_by=["category_id", "instance"])
+
+        # ── Step 3: Get timesteps ─────────────────────────────────────────
+        timesteps = get_day_timesteps(
+            self.date, self.latitude, self.longitude, self.interval_minutes)
+        if not timesteps:
+            print("  ⚠  No renderable timesteps.")
+            return
+        print(f"  Timesteps   : {len(timesteps)}  "
+              f"({timesteps[0][11:16]} → {timesteps[-1][11:16]} UTC)\n")
+
+        # ── Step 4: Output folders ─────────────────────────────────────────
+        video_dir = self.output_path / "video" / "rgb"
+        video_dir.mkdir(parents=True, exist_ok=True)
         video_frames_log = []
 
+        # ── Step 5: Timestep loop ─────────────────────────────────────────
         for frame_idx, date_time in enumerate(timesteps):
-            hhmm      = date_time[11:16].replace(":", "h")
-            step_path = self.output_path / hhmm
-            step_path.mkdir(parents=True, exist_ok=True)
+            hhmm = date_time[11:16]
+            print(f"  [{frame_idx:04d}] {hhmm} UTC", end="  ")
 
-            print(f"\n  ── [{frame_idx:04d}] {hhmm} {'─' * 32}")
-
-            # 1. Update lighting
+            # Update lighting
             self._setup_lighting(date_time)
 
-            # 2. Render all poses
+            # Render all poses (BlenderProc renders all registered poses)
             render_data = bproc.renderer.render()
-            bproc.writer.write_hdf5(str(step_path), render_data)
 
-            # 3. Extract video frame BEFORE save_images deletes HDF5s
-            self.save_video_frame(frame_idx, video_dir, step_path)
+            # Write HDF5 to a temp folder, extract pose_index, delete
+            tmp_path = self.output_path / "_tmp"
+            tmp_path.mkdir(exist_ok=True)
+            bproc.writer.write_hdf5(str(tmp_path), render_data)
 
-            # 4. Save all images + metadata
-            self.save_images(step_path, step_path)
-            self.save_metadata(step_path, date_time, frames_meta)
+            hdf5_file = tmp_path / f"{pose_i}.hdf5"
+            if hdf5_file.exists():
+                with h5py.File(hdf5_file, "r") as f:
+                    rgb = np.array(f["colors"][:])
+                Image.fromarray(rgb).save(video_dir / f"{frame_idx:04d}.png")
+                print(f"→ {frame_idx:04d}.png")
+            else:
+                print(f"⚠  HDF5 not found for pose {pose_i}")
+
+            # Clean up all HDF5 files
+            for i in range(self.camera_idx):
+                p = tmp_path / f"{i}.hdf5"
+                if p.exists():
+                    p.unlink()
 
             irr = self.irradiance
-            day_summary.append({
-                "time_utc":          date_time,
-                "hhmm":              hhmm,
-                "frame_index":       frame_idx,
-                "elevation":         irr.get("elevation"),
-                "azimuth":           irr.get("azimuth"),
-                "DNI_Wm2":           irr.get("dni"),
-                "DHI_Wm2":           irr.get("dhi"),
-                "GHI_Wm2":           irr.get("ghi_correct"),
-                "in_civil_twilight": irr.get("in_civil_twilight"),
-            })
             video_frames_log.append({
                 "frame":     frame_idx,
                 "filename":  f"{frame_idx:04d}.png",
@@ -963,41 +928,32 @@ class BlenderProcRenderer(RenderParams):
                 "DHI_Wm2":   irr.get("dhi"),
             })
 
-        # ── Write day summary ─────────────────────────────────────────────
-        with open(self.output_path / "day_summary.json", "w") as f:
-            json.dump({
-                "date":             self.date,
-                "latitude":         self.latitude,
-                "longitude":        self.longitude,
-                "altitude":         self.altitude,
-                "turbidity":        self.turbidity,
-                "interval_minutes": self.interval_minutes,
-                "num_frames":       self.camera_idx,
-                "timesteps":        day_summary,
-            }, f, indent=4)
+        # Clean up temp folder
+        try:
+            (self.output_path / "_tmp").rmdir()
+        except OSError:
+            pass
 
-        # ── Write video summary ───────────────────────────────────────────
-        video_dir.mkdir(parents=True, exist_ok=True)
-        with open(video_dir / "summary.json", "w") as f:
+        # ── Step 6: Write summary ──────────────────────────────────────────
+        with open(self.output_path / "video" / "summary.json", "w") as f:
             json.dump({
                 "date":             self.date,
-                "pose_index":       self.pose_index,
+                "pose_index":       pose_i,
                 "interval_minutes": self.interval_minutes,
                 "total_frames":     len(timesteps),
                 "ffmpeg_command": (
-                    f"ffmpeg -r 10 -i \"{video_dir}\\rgb\\%04d.png\" "
-                    f"-pix_fmt yuv420p \"{video_dir}\\rgb.mp4\""
+                    f"ffmpeg -r 10 -i \"{video_dir}\\%04d.png\" "
+                    f"-pix_fmt yuv420p \"{self.output_path}\\video\\rgb.mp4\""
                 ),
                 "frames": video_frames_log,
             }, f, indent=4)
 
         print(f"\n{'═' * 55}")
-        print(f"  Done. {len(timesteps)} timesteps × {self.camera_idx} poses.")
-        print(f"  Video frames → {video_dir / 'rgb'}")
-        print(f"  Day summary  → {self.output_path / 'day_summary.json'}")
+        print(f"  Done. {len(timesteps)} frames.")
+        print(f"  RGB frames → {video_dir}")
         print(f"  To make video:")
-        print(f"  ffmpeg -r 10 -i \"{video_dir}\\rgb\\%04d.png\" "
-              f"-pix_fmt yuv420p \"{video_dir}\\rgb.mp4\"")
+        print(f"  ffmpeg -r 10 -i \"{video_dir}\\%04d.png\" "
+              f"-pix_fmt yuv420p \"{self.output_path}\\video\\rgb.mp4\"")
         print(f"{'═' * 55}\n")
 
 def main():
