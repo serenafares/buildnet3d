@@ -653,7 +653,7 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
         denom = ax*by - ay*bx
         if abs(denom) < 1e-8: continue
 
-        EDGE_EPS = 0.01
+        EDGE_EPS = 0.00
         Z_BIAS = 1e-3
 
         for y in range(ymin, ymax + 1):
@@ -667,7 +667,17 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
                 if u >= -EDGE_EPS and v >= -EDGE_EPS and w >= -EDGE_EPS:
                     pixel_depth = w * d0 + u * d1 + v * d2
 
-                    if pixel_depth <= zbuf[y, x] + Z_BIAS:
+                    # if pixel_depth <= zbuf[y, x] + Z_BIAS:
+                    #     zbuf[y, x] = pixel_depth
+                    #     img[y, x, :] = color
+                    # Only replace if this triangle is truly closer.
+                    # Do NOT overwrite equal-depth pixels.
+                    if pixel_depth < zbuf[y, x] - Z_BIAS:
+                        zbuf[y, x] = pixel_depth
+                        img[y, x, :] = color
+
+                    # For nearly equal depth, keep the existing pixel.
+                    elif np.isinf(zbuf[y, x]):
                         zbuf[y, x] = pixel_depth
                         img[y, x, :] = color
 
