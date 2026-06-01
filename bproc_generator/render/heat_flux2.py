@@ -608,8 +608,8 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
     W, H  = resolution
     img   = np.zeros((H, W, 3), dtype=np.uint8)
     zbuf  = np.full((H, W), np.inf, dtype=np.float64)
-    Z_BIAS = 1e-3
-    EDGE_EPS = 0.05 
+    # Z_BIAS = 1e-3
+    # EDGE_EPS = 0.05 
 
     c2w = np.array(camera_to_world, dtype=np.float64)
     w2c = np.linalg.inv(c2w)
@@ -636,8 +636,10 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
         color = colors[i]
         projs = [project(v) for v in face.vertices]
         if any(p is None for p in projs): continue
-        depth = float(np.mean([p[2] for p in projs]))
-        pts   = [(p[0], p[1]) for p in projs]
+        # depth = float(np.mean([p[2] for p in projs]))
+        # pts   = [(p[0], p[1]) for p in projs]
+        d0, d1, d2 = projs[0][2], projs[1][2], projs[2][2]
+        pts = [(p[0], p[1]) for p in projs]
         if not any(0 <= p[0] < W and 0 <= p[1] < H for p in pts): continue
 
         p0, p1, p2 = pts
@@ -651,20 +653,34 @@ def render_flux_png(faces: list[Face], colors: np.ndarray,
         denom = ax*by - ay*bx
         if abs(denom) < 1e-8: continue
 
-        for y in range(ymin, ymax+1):
-            for x in range(xmin, xmax+1):
-                px,py = x-p0[0], y-p0[1]
-                u = (px*by - py*bx) / denom
-                v = (ax*py - ay*px) / denom
-                # if u >= 0 and v >= 0 and (u+v) <= 1:
-                if u >= -EDGE_EPS and v >= -EDGE_EPS and (u + v) <= 1 + EDGE_EPS:
-                    # if depth < zbuf[y, x]:
-                    #     zbuf[y, x]   = depth
-                    #     img[y, x, :] = color
-                    if depth <= zbuf[y, x] + Z_BIAS:
-                        zbuf[y, x]   = min(depth, zbuf[y, x])
+        EDGE_EPS = 0.02
+        Z_BIAS = 1e-3
+
+        for y in range(ymin, ymax + 1):
+            for x in range(xmin, xmax + 1):
+                px, py = x - p0[0], y - p0[1]
+
+                u = (px * by - py * bx) / denom
+                v = (ax * py - ay * px) / denom
+                w = 1.0 - u - v
+
+                if u >= -EDGE_EPS and v >= -EDGE_EPS and w >= -EDGE_EPS:
+                    pixel_depth = w * d0 + u * d1 + v * d2
+
+                    if pixel_depth <= zbuf[y, x] + Z_BIAS:
+                        zbuf[y, x] = pixel_depth
                         img[y, x, :] = color
-        n_drawn += 1
+
+        # for y in range(ymin, ymax+1):
+        #     for x in range(xmin, xmax+1):
+        #         px,py = x-p0[0], y-p0[1]
+        #         u = (px*by - py*bx) / denom
+        #         v = (ax*py - ay*px) / denom
+        #         # if u >= 0 and v >= 0 and (u+v) <= 1:
+        #             # if depth < zbuf[y, x]:
+        #             #     zbuf[y, x]   = depth
+        #             #     img[y, x, :] = color
+        # n_drawn += 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(output_path)
