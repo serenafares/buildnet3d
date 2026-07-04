@@ -8,18 +8,23 @@ import h5py
 import numpy as np
 from PIL import Image
 import tyro
-import os
 
+import os
 import math
 import pvlib
 import pandas as pd
-import pytz
 import bpy
 
-#sys.path.extend(["/home/chexu/buildnet3d"])
-#sys.path.extend([r"C:\Users\sefares\buildnet3d"])
 sys.path.extend([str(Path(__file__).resolve().parents[2])])
 from buildnet3d.utils.utils import build_translation
+
+# Physical calibration scalars
+K_SUN: float = 0.0075
+NISHITA_FILL_FACTOR: float = 10.0
+SHADOW_FILL_BOOST: float = 1.0
+CIVIL_TWILIGHT_ZENITH: float = 96.0
+DEFAULT_TURBIDITY: float = 3.0
+NORTH_OFFSET_DEG: float = 180.0
 
 @dataclass
 class RenderParams:
@@ -31,8 +36,7 @@ class RenderParams:
     """Output directory for rendered assets"""
     resolution: tuple[int, int] = (512, 512)
     """Rendering resolution (width, height)"""
-    #num_frames: int = 20
-    num_frames: int = 10
+    num_frames: int = 20
     """Number of camera frames to render"""
     enable_transparency: bool = False
     """Enable alpha channel in output images"""
@@ -69,169 +73,347 @@ class RenderParams:
     delta_poi: tuple[float, float] = (0.0, 0.5)
     """Point of interest adjustment range during pose refinement"""
 
-    ## Sunlight parameters
-    latitude: float = tyro.MISSING
-    """Building location latitude (degrees)"""
+    # Location and time
+    latitude:  float = tyro.MISSING
+    """Building location latitude [decimal degrees]."""
     longitude: float = tyro.MISSING
-    """Building location longitude (degrees)"""
-    date_time: str = tyro.MISSING
-    """Date and time for sun position (YYYY-MM-DD HH:MM:SS)"""
-    
-    # Lighting parameters
-    use_hdr_background: bool = True
-    """Enable procedural Nishita sky as DHI component — no HDR file needed"""
-    # use_hdr_background: bool = False
-    # """Enable HDR environment lighting"""
-    # background_path: Path = Path("bproc_generator/data/example/zwartkops_straight_sunset_4k.hdr")
-    """Path to HDR environment map"""
-    # hdr_strength: float = 1.0
-    hdr_strength: float = 45.0
-    """Environment lighting intensity"""
-    hdr_rotation: tuple[float, float, float] = (0.0, 0.0, 0.3926)
-    """Environment rotation in radians (x,y,z)"""
+    """Building location longitude [decimal degrees]."""
+    altitude:  float = 400.0
+    """Building altitude above sea level [m].  Used by the Ineichen model."""
+    date: str = tyro.MISSING
+    """
+    UTC date for the full-day render loop: 'YYYY-MM-DD'.
+    The pipeline automatically computes civil twilight bounds for this date
+    and generates one render per 30-minute step between them.
+    """
+    turbidity: float = DEFAULT_TURBIDITY
+    """Linke turbidity factor (2 = very clear, 3 = typical, 5 = hazy)."""
 
-    ## optional sun parameters
+    # Lighting calibration
+    k_sun: float = K_SUN
+    """SUN lamp energy per W/m² of DNI.  The sole exposure knob — calibrate once."""
+    nishita_fill_factor: float = NISHITA_FILL_FACTOR
+    """Nishita env-light fill relative to SUN lamp per unit.  Scene-independent."""
+    shadow_fill_boost: float = SHADOW_FILL_BOOST
+    """Extra sky fill multiplier at low elevations for golden-hour shadow softness."""
+
+    # Sky options
+    use_nishita_sky: bool = True
+    """Enable the Nishita procedural sky (models DHI — diffuse sky radiation)."""
+    air_density:  float = 1.0
+    """Nishita air density parameter."""
+    dust_density: float = 0.2
+    """Nishita dust/aerosol density parameter."""
+
+    # Sun lamp options
     use_sun: bool = True
-    """Enable sun light source"""
-    sun_energy: float = 500.0
-    # sun_energy: float = 10.0
-    # around 6 times higher than HDR
-    """Sun light intensity"""
-    north_offset_deg: float = 0.0
-    """Rotation offset to align building model with true North (degrees).
-        Set to 0 if the building's Y axis points North in the .obj file."""
+    """Enable the directional SUN lamp (models DNI — direct beam radiation)."""
+    north_offset_deg: float = NORTH_OFFSET_DEG
+    """
+    Azimuth rotation [°] that aligns the building mesh with geographic North.
+    For House.obj this is 180°, determined empirically. Must be recalibrated
+    for each new building mesh.
+    """
 
-## varying sun intensity and color based on zenith angle
-def get_max_elevation(latitude: float, longitude: float, date_time: str) -> float:
-    tz_str = pvlib.location.Location(latitude, longitude).tz
-    tz_local = pytz.timezone(tz_str)
-    dt_local = pd.Timestamp(date_time, tz=tz_local)
-    dt_utc = dt_local.tz_convert("UTC")
-    date = dt_utc.date()
-    times = pd.date_range(
-        start=f"{date} 00:00",
-        end=f"{date} 23:59",
-        freq="10min",
-        tz="UTC"
-    )
+
+def get_clear_sky_irradiance(
+    latitude: float,
+    longitude: float,
+    altitude: float,
+    date_time: str,
+    turbidity: float = DEFAULT_TURBIDITY,
+) -> dict:
+    """
+    Returns physically accurate clear-sky irradiance components using the
+    Ineichen model (pvlib).
+ 
+    Parameters
+    ----------
+    latitude, longitude : float
+        Geographic coordinates of the building [decimal degrees].
+    altitude : float
+        Elevation above sea level [m].  Used by the Ineichen model.
+    date_time : str
+        UTC date-time string "YYYY-MM-DD HH:MM:SS".
+    turbidity : float
+        Linke turbidity factor (2 = very clear, 3 = typical, 5 = hazy).
+ 
+    Returns
+    -------
+    dict
+        ghi              : Global Horizontal Irradiance        [W/m²]
+        dni              : Direct Normal Irradiance            [W/m²]
+        dni_effective    : DNI, zeroed during civil twilight   [W/m²]
+        dhi              : Diffuse Horizontal Irradiance       [W/m²]
+        ghi_correct      : DNI·cos(θ_z) + DHI                 [W/m²]
+        zenith           : apparent solar zenith angle         [°]
+        azimuth          : solar azimuth (N=0, E=90, CW)      [°]
+        elevation        : apparent solar elevation            [°]
+        airmass          : relative optical airmass
+        in_civil_twilight: True if 90° ≤ zenith ≤ 96°
+        sun_above_horizon: True if zenith < 90°
+    """
+    dt_utc = pd.Timestamp(date_time, tz="UTC")
+    times = pd.DatetimeIndex([dt_utc])
+ 
     solar_pos = pvlib.solarposition.get_solarposition(times, latitude, longitude)
-    max_zenith = solar_pos["apparent_zenith"].min()
-    return 90 - max_zenith
+    zenith    = float(solar_pos["apparent_zenith"].iloc[0])
+    azimuth   = float(solar_pos["azimuth"].iloc[0])
+    elevation = float(solar_pos["apparent_elevation"].iloc[0])
+ 
+    in_civil_twilight = 90.0 <= zenith <= CIVIL_TWILIGHT_ZENITH
+    sun_above_horizon = zenith < 90.0
+ 
+    if sun_above_horizon or in_civil_twilight:
+        airmass_rel = pvlib.atmosphere.get_relative_airmass(zenith)
+        airmass_abs = pvlib.atmosphere.get_absolute_airmass(airmass_rel)
+        cs = pvlib.clearsky.ineichen(
+            apparent_zenith=pd.Series([zenith], index=times),
+            airmass_absolute=pd.Series([airmass_abs], index=times),
+            linke_turbidity=turbidity,
+        )
+        ghi = float(cs["ghi"].iloc[0])
+        dni = float(cs["dni"].iloc[0])
+        dhi = float(cs["dhi"].iloc[0])
+ 
+        # During civil twilight the sun disc is below the horizon:
+        # DNI contributes nothing to horizontal surfaces but the sky is still lit.
+        dni_effective = 0.0 if in_civil_twilight else dni
+ 
+        cos_zenith  = math.cos(math.radians(zenith))
+        ghi_correct = max(0.0, dni * cos_zenith + dhi)
+    else:
+        ghi = dni = dhi = ghi_correct = 0.0
+        dni_effective = 0.0
+        airmass_rel = None
+ 
+    return {
+        "ghi":               ghi,
+        "dni":               dni,
+        "dni_effective":     dni_effective,
+        "dhi":               dhi,
+        "ghi_correct":       ghi_correct,
+        "zenith":            zenith,
+        "azimuth":           azimuth,
+        "elevation":         elevation,
+        "airmass":           airmass_rel,
+        "in_civil_twilight": in_civil_twilight,
+        "sun_above_horizon": sun_above_horizon,
+    }
 
-def sun_intensity_from_zenith(zenith_deg: float, max_energy: float = 500.0) -> float:
+def sun_color_from_elevation(elevation_deg: float) -> list:
     """
-    Computes sun intensity based on zenith angle.
-    Lower sun (high zenith) = less intense, higher sun = more intense.
+    Returns a linear-light RGB sun color as a function of solar elevation.
+ 
+    The piecewise ramp is calibrated against measured correlated colour
+    temperature (CCT) data for clear-sky conditions:
+ 
+        elevation ≤  0° :  deep red/orange   CCT ~2000 K  (civil twilight)
+        elevation    3° :  orange             CCT ~2500 K
+        elevation    8° :  golden yellow      CCT ~3500 K
+        elevation   15° :  warm white         CCT ~4500 K
+        elevation   30° :  daylight white     CCT ~5500 K
+        elevation ≥ 50° :  neutral sky white  CCT ~6000 K
+ 
+    R is always normalised to 1.0; Blender multiplies energy × color.
     """
-    # Intensity follows a sine curve — peaks at noon, fades at horizon
-    elevation_deg = 90 - zenith_deg
-    intensity = max_energy * math.sin(math.radians(elevation_deg))
-    return intensity
-
-def hdr_intensity_from_zenith(zenith_deg: float, max_hdr: float = 45.0) -> float:
-    """
-    Computes DHI (diffuse sky light) intensity based on zenith angle.
-    Follows the same sine curve as DNI but at 15% of peak DNI.
-    Under clear sky: DHI ~ 15% of DNI at all times.
-    """
-    elevation_deg = 90 - zenith_deg
-    intensity = max_hdr * math.sin(math.radians(elevation_deg))
-    return intensity
-
-
-def sun_color_from_zenith(zenith_deg: float) -> list:
-    """
-    Returns RGB color based on solar elevation following photography golden hour rules:
-    - 0°–3°:   deep orange/reddish
-    - 3°–8°:   warm orange
-    - 8°–15°:  yellow-warm
-    - 15°–30°: bright warm-neutral
-    - 30°–50°: bright neutral
-    - 50°+:    white / cool-neutral midday
-    """
-    elevation_deg = 90 - zenith_deg
-
-    if elevation_deg <= 3:
-        t = elevation_deg / 3.0
-        r, g, b = 1.0, 0.25 + 0.10 * t, 0.05 + 0.10 * t
-
-    elif elevation_deg <= 8:
-        t = (elevation_deg - 3) / 5.0
-        r, g, b = 1.0, 0.35 + 0.15 * t, 0.15 + 0.10 * t
-
-    elif elevation_deg <= 15:
-        t = (elevation_deg - 8) / 7.0
-        r, g, b = 1.0, 0.50 + 0.20 * t, 0.25 + 0.20 * t
-
-    elif elevation_deg <= 30:
-        t = (elevation_deg - 15) / 15.0
-        r, g, b = 1.0, 0.70 + 0.20 * t, 0.45 + 0.25 * t
-
-    elif elevation_deg <= 50:
-        t = (elevation_deg - 30) / 20.0
-        r, g, b = 1.0, 0.90 + 0.08 * t, 0.70 + 0.25 * t
-
+    el = max(elevation_deg, -6.0)
+ 
+    if el <= 0:
+        t = (el + 6.0) / 6.0
+        r, g, b = 1.0, 0.18 + 0.12 * t, 0.02 + 0.06 * t
+ 
+    elif el <= 3:
+        t = el / 3.0
+        r, g, b = 1.0, 0.30 + 0.08 * t, 0.08 + 0.08 * t
+ 
+    elif el <= 8:
+        t = (el - 3) / 5.0
+        r, g, b = 1.0, 0.38 + 0.17 * t, 0.16 + 0.14 * t
+ 
+    elif el <= 15:
+        t = (el - 8) / 7.0
+        r, g, b = 1.0, 0.55 + 0.20 * t, 0.30 + 0.20 * t
+ 
+    elif el <= 30:
+        t = (el - 15) / 15.0
+        r, g, b = 1.0, 0.75 + 0.17 * t, 0.50 + 0.32 * t
+ 
+    elif el <= 50:
+        t = (el - 30) / 20.0
+        r, g, b = 1.0, 0.92 + 0.06 * t, 0.82 + 0.14 * t
+ 
     else:
         r, g, b = 1.0, 1.0, 1.0
+ 
+    return [round(r, 3), round(g, 3), round(b, 3)]
 
-    return [round(r, 2), round(g, 2), round(b, 2)]
-
-
-## conversion function
-def solar_to_blender_rotation(azimuth_deg, zenith_deg, north_offset_deg=0):
+def pvlib_to_blender_azimuth(azimuth_pvlib_deg: float,
+                              north_offset_deg: float) -> float:
     """
-    Converts PSA solar angles to Blender sun rotation.
-    azimuth_deg: 0=North, 90=East, clockwise
-    zenith_deg: 0=overhead, 90=horizon
-    north_offset_deg: building's North alignment in the .obj file
+    Converts a pvlib meteorological azimuth to a unified Blender azimuth
+    (counter-clockwise degrees from Blender +Y, after north-offset correction).
+ 
+    This single formula is used for BOTH the Nishita sky node and the SUN
+    lamp, which guarantees that the sky gradient and lamp shadows are always
+    collinear (no North/South inversion).
+ 
+    Parameters
+    ----------
+    azimuth_pvlib_deg : float
+        Solar azimuth from pvlib (N=0, E=90, S=180, W=270, clockwise).
+    north_offset_deg : float
+        Degrees to rotate so that the building's chosen south-facing façade
+        is aligned with geographic South.  For House.obj: 180°.
+ 
+    Returns
+    -------
+    float
+        Azimuth in degrees, counter-clockwise from Blender +Y.
     """
-    elevation_rad = math.radians(90 - zenith_deg)
-    blender_azimuth_rad = math.radians(-(azimuth_deg + north_offset_deg))
-    return (elevation_rad, 0, blender_azimuth_rad)    
+    return -azimuth_pvlib_deg + north_offset_deg
+
+def solar_to_blender_sun_rotation(azimuth_pvlib_deg: float,
+                                   elevation_deg: float,
+                                   north_offset_deg: float) -> tuple:
+    """
+    Returns the XYZ Euler rotation tuple for a Blender SUN lamp.
+ 
+    The lamp's rotation_mode must be set to 'XYZ' before assigning this.
+    At rotation (0, 0, 0) the lamp illuminates straight down (−Z world).
+    Y rotation tilts the beam up toward the horizon; Z rotation spins it
+    around the vertical axis to the correct azimuth.
+ 
+    Returns
+    -------
+    tuple(float, float, float)
+        (0.0, elevation_rad, azimuth_rad) — ready for rotation_euler.
+    """
+    az_blender = pvlib_to_blender_azimuth(azimuth_pvlib_deg, north_offset_deg)
+    elevation_rad = math.radians(elevation_deg)
+    azimuth_rad   = math.radians(az_blender)
+    return (0.0, elevation_rad, azimuth_rad)
+
+def solar_to_nishita_rotation(azimuth_pvlib_deg: float,
+                               north_offset_deg: float) -> float:
+    """
+    Returns the sun_rotation value (radians) for Blender's ShaderNodeTexSky
+    (Nishita model).
+ 
+    Nishita's sun_rotation is 0 at +Y and increases counter-clockwise, which
+    is the same convention as pvlib_to_blender_azimuth, so the mapping is a
+    direct conversion with no extra sign flip.
+ 
+    Returns
+    -------
+    float
+        sun_rotation in radians.
+    """
+    az_blender = pvlib_to_blender_azimuth(azimuth_pvlib_deg, north_offset_deg)
+    return math.radians(az_blender)
+
+
+
+def get_day_timesteps(date: str, latitude: float, longitude: float) -> list[str]:
+    """
+    Returns all renderable UTC timesteps for a given date at :00 and :30,
+    bounded by civil twilight (solar zenith ≤ 96°).
+
+    The start is rounded UP to the next :00/:30 after civil twilight begins,
+    and the end is rounded DOWN to the last :00/:30 before civil twilight ends.
+    This guarantees every returned timestep has a physically meaningful sky.
+
+    Parameters
+    ----------
+    date : str
+        Date string "YYYY-MM-DD".
+    latitude, longitude : float
+        Geographic coordinates used to compute solar position.
+
+    Returns
+    -------
+    list[str]
+        Sorted list of UTC datetime strings "YYYY-MM-DD HH:MM:SS".
+
+    Examples
+    --------
+    Lausanne (46.5°N), June 21  → 34 steps, 03:30–20:00 UTC
+    Lausanne (46.5°N), Dec  21  → 19 steps, 07:00–16:00 UTC
+    """
+    # Sample every 10 min to locate civil twilight bounds precisely
+    times = pd.date_range(f"{date} 00:00", f"{date} 23:59", freq="10min", tz="UTC")
+    solar = pvlib.solarposition.get_solarposition(times, latitude, longitude)
+    lit   = solar[solar["apparent_zenith"] <= CIVIL_TWILIGHT_ZENITH]
+
+    if lit.empty:
+        return []  # polar night — no renderable timesteps
+
+    first_utc = lit.index[0]
+    last_utc  = lit.index[-1]
+
+    # Round start UP and end DOWN to nearest :00 or :30
+    def _round_up(dt: pd.Timestamp) -> pd.Timestamp:
+        if dt.minute < 30:
+            return dt.replace(minute=30, second=0, microsecond=0)
+        return (dt + pd.Timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
+    def _round_down(dt: pd.Timestamp) -> pd.Timestamp:
+        if dt.minute >= 30:
+            return dt.replace(minute=30, second=0, microsecond=0)
+        return dt.replace(minute=0, second=0, microsecond=0)
+
+    start = _round_up(first_utc)
+    end   = _round_down(last_utc)
+
+    steps = pd.date_range(start, end, freq="30min")
+    return [s.strftime("%Y-%m-%d %H:%M:%S") for s in steps]
+
 
 @dataclass
 class BlenderProcRenderer(RenderParams):
     """Generates synthetic building imagery with BlenderProc"""
     
-    def __post_init__(self):     
+    def __post_init__(self):
         self.output_path.mkdir(parents=True, exist_ok=True)
-        self.metadata: dict = {
-            "camera_model" : "OPEN_CV",
-            "width": self.resolution[0],
-            "height": self.resolution[1],
-            "has_mono_prior": False,
-            "has_foreground_mask": False,
+
+        # Base metadata template — copied and extended per timestep in run()
+        self._base_metadata: dict = {
+            "camera_model":          "OPEN_CV",
+            "width":                 self.resolution[0],
+            "height":                self.resolution[1],
+            "has_mono_prior":        False,
+            "has_foreground_mask":   False,
             "has_sparse_sfm_points": False,
-            "scene_box" : {},
-            "frames": [],
+            "scene_box":             {},
+            "frames":                [],
         }
-        ## adding location and time info for sun position calculation
-        self.metadata["location"] = {
-            "latitude": self.latitude,
-            "longitude": self.longitude,
-            }
-        self.metadata["capture_time"] = self.date_time
 
-        ## sun state
-        self.sun_azimuth = None
-        self.sun_zenith = None
-        self.sun_energy_actual = None
-        self.sun_color_actual = None
-        self.hdr_energy_actual = None
+        # Per-render lighting state — reset by _setup_lighting() each timestep
+        self.irradiance:        dict       = {}
+        self.sun_energy_actual: float|None = None
+        self.sky_energy_actual: float|None = None
+        self.sun_color_actual:  list|None  = None
 
-        # Initialize rendering pipeline
+        # Initialize Blender/BlenderProc
         bproc.init()
-        # self.scene_objects = bproc.loader.load_obj(str(self.load_scene))
-        self.scene_objects = bproc.loader.load_obj(
-            str(self.load_scene.resolve())
-        )
-        self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects) 
+
+        # Temporarily change working directory to the OBJ folder so that
+        # Blender resolves MTL texture paths (House_Diff_5k.png, etc.)
+        # relative to the OBJ file rather than the process working directory.
+        obj_path = self.load_scene.resolve()
+        _cwd = os.getcwd()
+        os.chdir(obj_path.parent)
+        self.scene_objects = bproc.loader.load_obj(str(obj_path))
+        os.chdir(_cwd)
+
+        self.bvh_tree = bproc.object.create_bvh_tree_multi_objects(self.scene_objects)
 
         self._assign_categories()
         self._setup_camera()
-        self._setup_lighting()
-        
-        self.color_map = self._get_color_map()
+        # NOTE: _setup_lighting() is NOT called here.
+        # It is called once per timestep inside run().
+
+        self.color_map  = self._get_color_map()
         self.camera_idx = 0
 
     def _assign_categories(self):
@@ -245,121 +427,135 @@ class BlenderProcRenderer(RenderParams):
         self.camera_list: list[np.ndarray] = []
         bproc.camera.set_resolution(*self.resolution)
     
-    def _setup_lighting(self):
+    def _setup_lighting(self, date_time: str):
         """Configures environment lighting"""
-        #if self.use_hdr_background:
-        #    bproc.world.set_world_background_hdr_img(
-        #        str(self.background_path),
-        #        strength=self.hdr_strength,
-        #        rotation_euler=self.hdr_rotation,
-        #    )
+        # Remove any lights present in the scene before setting up ours
+        for obj in bpy.data.objects:
+            if obj.type == 'LIGHT':
+                bpy.data.objects.remove(obj, do_unlink=True)
 
-        # Compute sun position first
-        zenith = None
-        azimuth = None
-        if self.use_sun:
-            tz_str = pvlib.location.Location(self.latitude, self.longitude).tz
-            tz_local = pytz.timezone(tz_str)
-            dt_local = pd.Timestamp(self.date_time, tz=tz_local)
-            dt_utc = dt_local.tz_convert("UTC")
-            dt = pd.DatetimeIndex([dt_utc])
+        irr = get_clear_sky_irradiance(
+            self.latitude, self.longitude, self.altitude,
+            date_time, self.turbidity,
+        )
+        self.irradiance = irr
 
-            solar_pos = pvlib.solarposition.get_solarposition(
-                dt, self.latitude, self.longitude
-            )
+        zenith    = irr["zenith"]
+        azimuth   = irr["azimuth"]
+        elevation = irr["elevation"]
 
-            azimuth = solar_pos["azimuth"].values[0]
-            zenith = solar_pos["apparent_zenith"].values[0]
-            self.sun_azimuth = azimuth
-            self.sun_zenith = zenith
+        print(f"\n{'─' * 55}")
+        print(f"  Date/time       : {date_time} UTC")
+        print(f"  Solar position  : elevation {elevation:.1f}°  "
+              f"zenith {zenith:.1f}°  azimuth {azimuth:.1f}°")
+        print(f"  DNI             : {irr['dni']:.1f} W/m²")
+        print(f"  DHI             : {irr['dhi']:.1f} W/m²")
+        print(f"  GHI             : {irr['ghi_correct']:.1f} W/m²  "
+              f"(= DNI·cos θ + DHI)")
+        if irr["in_civil_twilight"]:
+            print(f"  ⚠  Civil twilight — sun disc below horizon, no SUN lamp")
+        print(f"{'─' * 55}\n")
+ 
+        # Nishita procedural sky (DHI component)
+        if self.use_nishita_sky and (irr["sun_above_horizon"] or irr["in_civil_twilight"]):
+            self._setup_nishita_sky(zenith, azimuth, elevation, irr["dhi"])
+        else:
+            self._setup_night_sky()
+ 
+        # Directional SUN lamp (DNI component)
+        if self.use_sun and irr["sun_above_horizon"]:
+            self._setup_sun_lamp(azimuth, zenith, elevation, irr["dni_effective"])
+    
+    def _setup_nishita_sky(self, zenith: float, azimuth: float,
+                            elevation: float, dhi: float):
+        """Configures Blender's Nishita sky texture driven by pvlib DHI."""
+        world = bpy.data.worlds["World"]
+        world.use_nodes = True
+        nodes = world.node_tree.nodes
+        links = world.node_tree.links
+        nodes.clear()
+ 
+        sky = nodes.new("ShaderNodeTexSky")
+        sky.sky_type      = "NISHITA"
+        sky.sun_elevation = math.radians(max(elevation, -6.0))  # clamp civil twilight
+        sky.sun_rotation  = solar_to_nishita_rotation(azimuth, self.north_offset_deg)
+        sky.altitude      = self.altitude
+        sky.air_density   = self.air_density
+        sky.dust_density  = self.dust_density
+ 
+        bg  = nodes.new("ShaderNodeBackground")
+        out = nodes.new("ShaderNodeOutputWorld")
+        links.new(sky.outputs[0], bg.inputs[0])
+        links.new(bg.outputs[0], out.inputs[0])
+ 
+        # Golden-hour fill boost: linearly ramp from shadow_fill_boost at
+        # horizon to 1.0 at 15° so that noon lighting is unaffected.
+        if elevation < 15.0:
+            t     = max(elevation, 0.0) / 15.0
+            boost = self.shadow_fill_boost * (1.0 - t) + 1.0 * t
+        else:
+            boost = 1.0
+ 
+        sky_strength = (dhi * self.k_sun / self.nishita_fill_factor) * boost
+        bg.inputs[1].default_value = sky_strength
+        self.sky_energy_actual = dhi
+ 
+        print(f"  Nishita sky     : DHI={dhi:.1f} W/m²  el={elevation:.1f}°  "
+              f"boost={boost:.2f}  → strength={sky_strength:.4f}")
+        print(f"  Nishita rotation: {math.degrees(sky.sun_rotation):.1f}° "
+              f"(Blender CCW from +Y)")
+    
+    def _setup_night_sky(self):
+        """Sets the world background to a near-black sky for night scenes."""
+        world = bpy.data.worlds["World"]
+        world.use_nodes = True
+        nodes = world.node_tree.nodes
+        nodes.clear()
+ 
+        bg  = nodes.new("ShaderNodeBackground")
+        out = nodes.new("ShaderNodeOutputWorld")
+        bg.inputs[0].default_value = (0.005, 0.005, 0.015, 1.0)  # faint blue-black
+        bg.inputs[1].default_value = 0.02
+        world.node_tree.links.new(bg.outputs[0], out.inputs[0])
+ 
+        self.sky_energy_actual = 0.0
+        print("  Night sky       : minimal ambient (no solar irradiance)")
 
-        # # DHI component — HDR background
-        # if self.use_hdr_background:
-        #     if self.use_sun and zenith is not None and zenith < 90:
-        #         effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
-        #     else:
-        #         effective_hdr_strength = self.hdr_strength * 0.05  # night ambient
-        #     bproc.world.set_world_background_hdr_img(
-        #         str(self.background_path),
-        #         strength=effective_hdr_strength,
-        #         rotation_euler=self.hdr_rotation,
-        #     )
-        #     self.hdr_energy_actual = effective_hdr_strength
+    def _setup_sun_lamp(self, azimuth: float, zenith: float,
+                         elevation: float, dni: float):
+        """
+        Creates and configures the directional SUN lamp from pvlib DNI.
+ 
+        The lamp azimuth uses the same pvlib_to_blender_azimuth() helper as
+        the Nishita node, guaranteeing that shadows always align with the sky
+        gradient — the two components can never point in different directions.
+        """
+        rotation = solar_to_blender_sun_rotation(azimuth, elevation,
+                                                  self.north_offset_deg)
+        color  = sun_color_from_elevation(elevation)
+        energy = dni * self.k_sun
+ 
+        self.sun_energy_actual = dni
+        self.sun_color_actual  = color
+ 
+        sun = bproc.types.Light()
+        sun.set_type("SUN")
+        sun.set_energy(energy)
+        sun.set_color(color)
+        sun.blender_obj.rotation_mode  = "XYZ"
+        sun.blender_obj.rotation_euler = rotation
+ 
+        dhi = self.sky_energy_actual or 0.0
+        cos_z = math.cos(math.radians(zenith))
+        ghi   = dni * cos_z + dhi
+ 
+        print(f"  SUN lamp        : DNI={dni:.1f} W/m²  → energy={energy:.4f}")
+        print(f"  GHI (correct)   : {ghi:.1f} W/m²  "
+              f"(= {dni:.1f}·cos({zenith:.1f}°) + {dhi:.1f})")
+        print(f"  Color           : R={color[0]}  G={color[1]}  B={color[2]}")
+        print(f"  Lamp rotation   : Y={math.degrees(rotation[1]):.1f}°  "
+              f"Z={math.degrees(rotation[2]):.1f}°")
 
-        # DHI component — Nishita procedural sky
-        if self.use_hdr_background and zenith is not None and zenith < 90:
-            world = bpy.data.worlds["World"]
-            world.use_nodes = True
-            nodes = world.node_tree.nodes
-            links = world.node_tree.links
-            nodes.clear()
-
-            # Physically-based sky matching sun position
-            sky = nodes.new("ShaderNodeTexSky")
-            sky.sky_type = "NISHITA"
-            sky.sun_elevation = math.radians(90 - zenith)
-            sky.sun_rotation  = math.radians(azimuth)
-            sky.altitude      = 400.0   # Lausanne altitude in meters
-            sky.air_density   = 1.0
-            sky.dust_density  = 0.3
-
-            bg  = nodes.new("ShaderNodeBackground")
-            # bg.inputs[1].default_value = self.hdr_strength / 150.0
-            # bg.inputs[1].default_value = self.hdr_strength / 100.0
-
-            effective_hdr_strength = hdr_intensity_from_zenith(zenith, self.hdr_strength)
-            bg.inputs[1].default_value = effective_hdr_strength / 50.0
-            self.hdr_energy_actual = effective_hdr_strength
-
-            out = nodes.new("ShaderNodeOutputWorld")
-            links.new(sky.outputs[0], bg.inputs[0])
-            links.new(bg.outputs[0], out.inputs[0])
-
-            # self.hdr_energy_actual = hdr_intensity_from_zenith(zenith, self.hdr_strength)
-            # print(f"  Sky      : Nishita procedural (elevation={90-zenith:.1f}°)")
-
-        elif self.use_hdr_background:
-            # Night time — set sky to black
-            world = bpy.data.worlds["World"]
-            world.use_nodes = True
-            nodes = world.node_tree.nodes
-            nodes.clear()
-            bg  = nodes.new("ShaderNodeBackground")
-            bg.inputs[0].default_value = (0, 0, 0, 1)
-            bg.inputs[1].default_value = 0.0
-            out = nodes.new("ShaderNodeOutputWorld")
-            world.node_tree.links.new(bg.outputs[0], out.inputs[0])
-            self.hdr_energy_actual = 0.0
-
-        # DNI component — direct sun light
-        if self.use_sun and zenith is not None:
-            if zenith >= 90:
-                print(f"Sun is below horizon (zenith={zenith:.1f}°), skipping sun light.")
-                return
-
-            sun_rotation = solar_to_blender_rotation(
-                azimuth, zenith, self.north_offset_deg
-            )
-            energy = sun_intensity_from_zenith(zenith, self.sun_energy)
-            color = sun_color_from_zenith(zenith)
-
-            self.sun_energy_actual = energy
-            self.sun_color_actual = color
-
-            sun = bproc.types.Light()
-            sun.set_type("SUN")
-            sun.set_energy(energy)
-            sun.set_color(color)
-            sun.blender_obj.rotation_euler = sun_rotation
-
-            dhi = self.hdr_energy_actual or 0.0
-            print(f"Sun placed:")
-            print(f"  Azimuth  : {azimuth:.1f}°")
-            print(f"  Zenith   : {zenith:.1f}°")
-            print(f"  DNI      : {energy:.1f} W/m²")
-            print(f"  DHI      : {dhi:.1f} W/m²")
-            print(f"  GHI      : {energy + dhi:.1f} W/m²")
-            print(f"  Color    : {color}")
 
     @staticmethod
     def _get_color_map() -> dict[str, list[float]]:
@@ -484,88 +680,221 @@ class BlenderProcRenderer(RenderParams):
         """Registers valid camera pose to pipeline"""
         bproc.camera.add_camera_pose(pose, self.camera_idx)
         self.camera_list.append(pose)
-        self.metadata["frames"].append({
-            "rgb_path": f"{self.camera_idx:04d}.png",
-            "segmentation_path": f"{self.camera_idx:04d}_mask.png",
-            "camera_to_world": pose.tolist(),
-            "intrinsics": bproc.camera.get_intrinsics_as_K_matrix().tolist(),
-        })
         self.camera_idx += 1
 
-    def save_images(self):
-        """Converts HDF5 renders to standard image formats"""
-        for subdir in ["images", "normals", "depths", "semantics", "instances"]:
-            (self.output_path / subdir).mkdir(exist_ok=True)
+    def save_images(self, step_path: Path, hdf5_path: Path):
+        """
+        Converts HDF5 renders to standard image formats inside step_path.
 
-        # Process each frame
+        Parameters
+        ----------
+        step_path : Path
+            Timestep output folder, e.g. outputs/generated/10h00/
+        hdf5_path : Path
+            Folder where BlenderProc wrote the .hdf5 files (self.output_path).
+        """
+        for subdir in ["images", "normals", "depths", "semantics", "instances"]:
+            (step_path / subdir).mkdir(exist_ok=True)
+
         for i in range(self.camera_idx):
-            with h5py.File(self.output_path / f"{i}.hdf5", "r") as f:
-                # Process RGB
+            with h5py.File(hdf5_path / f"{i}.hdf5", "r") as f:
+                # RGB
                 rgb = np.array(f["colors"][:])
                 if self.enable_transparency:
                     alpha = np.full((*rgb.shape[:2], 1), int(self.alpha * 255), dtype=np.uint8)
                     rgb = np.concatenate([rgb[..., :3], alpha], axis=-1)
-                Image.fromarray(rgb).save(self.output_path / "images" / f"{i:04d}.png")
-                
-                # Process normals
+                Image.fromarray(rgb).save(step_path / "images" / f"{i:04d}.png")
+
+                # Normals
                 normal = (f["normals"][:] * 255).astype(np.uint8)
-                Image.fromarray(normal).save(self.output_path / "normals" / f"{i:04d}_normal.png")
-                
-                # Process depth
+                Image.fromarray(normal).save(step_path / "normals" / f"{i:04d}_normal.png")
+
+                # Depth
                 depth = (f["depth"][:] * 1000).astype(np.uint16)
-                Image.fromarray(depth).save(self.output_path / "depths" / f"{i:04d}_depth.png")
-                
-                # Process semantics
+                Image.fromarray(depth).save(step_path / "depths" / f"{i:04d}_depth.png")
+
+                # Semantics
                 semantic = f["category_id_segmaps"][:]
                 semantics = np.zeros((*semantic.shape, 3), dtype=np.uint8)
                 for j, color in self.color_map.items():
                     semantics[semantic == int(j)] = color
-                Image.fromarray(semantics).save(self.output_path / "semantics" / f"{i:04d}_mask.png")
-                
-                # Process instances
+                Image.fromarray(semantics).save(step_path / "semantics" / f"{i:04d}_mask.png")
+
+                # Instances
                 instance = f["instance_segmaps"][:]
                 instances = np.zeros((*instance.shape, 3), dtype=np.uint8)
                 for j, color in self.color_map.items():
                     instances[instance == int(j)] = color
-                Image.fromarray(instances).save(self.output_path / "instances" / f"{i:04d}.png")
-            
-            # Cleanup HDF5
-            (self.output_path / f"{i}.hdf5").unlink()
-            
-    def save_metadata(self):
-        """Saves camera metadata in JSON format"""
-        # Save sun info to metadata
-        self.metadata["sun"] = {
-            "azimuth": self.sun_azimuth,
-            "zenith": self.sun_zenith,
-            "DNI": self.sun_energy_actual,
-            "DHI": self.hdr_energy_actual,  # new
-            "GHI": (self.sun_energy_actual or 0) + (self.hdr_energy_actual or 0),  # new
-            "color": self.sun_color_actual,
-            "date_time": self.date_time,
-            "latitude": self.latitude,
-            "longitude": self.longitude,
+                Image.fromarray(instances).save(step_path / "instances" / f"{i:04d}.png")
+
+            (hdf5_path / f"{i}.hdf5").unlink()
+
+    def save_metadata(self, step_path: Path, date_time: str, frames_meta: list):
+        """
+        Saves per-timestep metadata to step_path/meta_data.json.
+
+        Parameters
+        ----------
+        step_path : Path
+            Timestep output folder, e.g. outputs/generated/10h00/
+        date_time : str
+            UTC datetime string for this render step.
+        frames_meta : list
+            Camera frame metadata list (poses + intrinsics), shared across all timesteps.
+        """
+        irr    = self.irradiance
+        dhi    = self.sky_energy_actual or 0.0
+        dni    = self.sun_energy_actual or 0.0
+        zenith = irr.get("zenith")
+        cos_z  = math.cos(math.radians(zenith)) if zenith is not None else 0.0
+
+        metadata = {
+            **self._base_metadata,
+            "frames":       frames_meta,
+            "capture_time": date_time,
+            "location": {
+                "latitude":  self.latitude,
+                "longitude": self.longitude,
+                "altitude":  self.altitude,
+            },
+            "sun": {
+                "azimuth":             irr.get("azimuth"),
+                "zenith":              zenith,
+                "elevation":           irr.get("elevation"),
+                "DNI_Wm2":             irr.get("dni"),
+                "DHI_Wm2":            dhi,
+                "GHI_Wm2":             dni * cos_z + dhi,
+                "GHI_pvlib_Wm2":       irr.get("ghi"),
+                "airmass":             irr.get("airmass"),
+                "turbidity":           self.turbidity,
+                "in_civil_twilight":   irr.get("in_civil_twilight"),
+                "sun_color":           self.sun_color_actual,
+                "k_sun":               self.k_sun,
+                "nishita_fill_factor": self.nishita_fill_factor,
+                "shadow_fill_boost":   self.shadow_fill_boost,
+                "blender_sun_energy":  (dni * self.k_sun) if irr.get("sun_above_horizon") else 0.0,
+                "blender_sky_strength":(dhi * self.k_sun / self.nishita_fill_factor),
+                "north_offset_deg":    self.north_offset_deg,
+            },
         }
-        with open(self.output_path / "meta_data.json", "w") as f:
-            json.dump(self.metadata, f, indent=4)
+        with open(step_path / "meta_data.json", "w") as f:
+            json.dump(metadata, f, indent=4)
 
     def run(self):
-        """Main rendering pipeline execution"""
+        """
+        Main rendering pipeline execution.
+
+        Phase 1 — Camera generation (runs ONCE for the whole day):
+            Generate num_frames valid camera poses around the building.
+            This is the expensive step; camera poses are shared across all
+            timesteps so the same viewpoints are compared at every hour.
+
+        Phase 2 — Timestep loop (runs once per 30-min step):
+            For each UTC timestep between civil twilight bounds:
+              1. Update lighting (sun position, color, energy)
+              2. Re-render the identical camera poses under new lighting
+              3. Save images + metadata to a dedicated subfolder
+
+        Output structure:
+            outputs/generated/
+                day_summary.json     ← solar table for all timesteps
+                10h00/
+                    images/
+                    normals/
+                    depths/
+                    semantics/
+                    instances/
+                    meta_data.json
+                10h30/
+                    ...
+        """
+        # ── Phase 1: Generate camera poses (once) ────────────────────────
         poi = bproc.object.compute_poi(self.scene_objects)
+        print(f"\n{'═' * 55}")
+        print(f"  Generating {self.num_frames} camera poses (runs once for the day)")
+        print(f"{'═' * 55}")
         for _ in range(self.num_frames):
             self.generate_camera_pose(poi)
 
-        # Configure render outputs
+        # Snapshot frame metadata — same poses reused at every timestep
+        frames_meta = [
+            {
+                "rgb_path":          f"{i:04d}.png",
+                "segmentation_path": f"{i:04d}_mask.png",
+                "camera_to_world":   self.camera_list[i].tolist(),
+                "intrinsics":        bproc.camera.get_intrinsics_as_K_matrix().tolist(),
+            }
+            for i in range(self.camera_idx)
+        ]
+
+        # Register output passes once — BlenderProc does not allow calling
+        # enable_depth_output / enable_normals_output more than once per session.
         bproc.renderer.set_output_format(enable_transparency=self.enable_transparency)
         bproc.renderer.enable_depth_output(activate_antialiasing=False)
         bproc.renderer.enable_normals_output()
         bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
-        
-        # Execute rendering and save results
-        render_data = bproc.renderer.render()
-        bproc.writer.write_hdf5(str(self.output_path), render_data)
-        self.save_images()
-        self.save_metadata()
+
+        # ── Phase 2: Timestep loop ────────────────────────────────────────
+        timesteps = get_day_timesteps(self.date, self.latitude, self.longitude)
+        print(f"\n{'═' * 55}")
+        print(f"  Date            : {self.date}")
+        print(f"  Renderable steps: {len(timesteps)}  "
+              f"({timesteps[0][11:16]} → {timesteps[-1][11:16]} UTC)")
+        print(f"{'═' * 55}\n")
+
+        day_summary = []
+
+        for date_time in timesteps:
+            # Subfolder name: "10h30" from "2024-06-21 10:30:00"
+            hhmm      = date_time[11:16].replace(":", "h")
+            step_path = self.output_path / hhmm
+            step_path.mkdir(parents=True, exist_ok=True)
+
+            print(f"\n  ── Timestep {hhmm} {'─' * 38}")
+
+            # 1. Update lighting for this timestep
+            self._setup_lighting(date_time)
+
+            # 2. Re-render the same camera poses under new lighting.
+            #    Writing directly to step_path isolates each render completely —
+            #    no keyframe reset needed, no accumulation between timesteps.
+            render_data = bproc.renderer.render()
+            bproc.writer.write_hdf5(str(step_path), render_data)
+
+            # 3. Save images and per-timestep metadata into subfolder
+            self.save_images(step_path, step_path)
+            self.save_metadata(step_path, date_time, frames_meta)
+
+            # 4. Record solar values for the day summary
+            irr = self.irradiance
+            day_summary.append({
+                "time_utc":          date_time,
+                "hhmm":              hhmm,
+                "elevation":         irr.get("elevation"),
+                "azimuth":           irr.get("azimuth"),
+                "DNI_Wm2":           irr.get("dni"),
+                "DHI_Wm2":           irr.get("dhi"),
+                "GHI_Wm2":           irr.get("ghi_correct"),
+                "in_civil_twilight": irr.get("in_civil_twilight"),
+            })
+
+        # ── Write day summary (one file covering all timesteps) ───────────
+        summary = {
+            "date":       self.date,
+            "latitude":   self.latitude,
+            "longitude":  self.longitude,
+            "altitude":   self.altitude,
+            "turbidity":  self.turbidity,
+            "num_frames": self.camera_idx,
+            "timesteps":  day_summary,
+        }
+        with open(self.output_path / "day_summary.json", "w") as f:
+            json.dump(summary, f, indent=4)
+
+        print(f"\n{'═' * 55}")
+        print(f"  Done. {len(timesteps)} timesteps × {self.camera_idx} poses rendered.")
+        print(f"  Summary → {self.output_path / 'day_summary.json'}")
+        print(f"{'═' * 55}\n")
 
 def main():
     """Command-line entry point for rendering pipeline"""
